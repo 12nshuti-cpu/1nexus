@@ -5,6 +5,8 @@ from core.system_monitor import SystemMonitor
 from core.ai import AIService
 from core.pc_control import PCController
 from core.shell_executor import ShellExecutor
+from core.tools import ToolRegistry
+from config.settings import NEXUSSettings
 
 
 class CommandEngine:
@@ -26,6 +28,8 @@ class CommandEngine:
         self.ai = AIService()
         self.pc = PCController()
         self.shell = ShellExecutor()
+        self.tools = ToolRegistry()
+        self.settings = NEXUSSettings()
 
     def is_shell_command(self, command):
         return self.shell.is_shell_command(command)
@@ -34,7 +38,6 @@ class CommandEngine:
         request = self.shell.prepare(command)
         if request is None:
             return "Not a shell command."
-
         result = self.shell.run(request)
         return self.shell.format_result(result, max_chars=30000)
 
@@ -42,6 +45,7 @@ class CommandEngine:
         """Reload services so newly saved NEXUS settings take effect."""
         self.ai = AIService()
         self.shell = ShellExecutor()
+        self.settings = NEXUSSettings()
 
     def shell_requires_confirmation(self, command):
         """Return True when a shell command is marked as risk-sensitive."""
@@ -60,8 +64,7 @@ class CommandEngine:
         return self.pc.can_handle(command)
 
     def execute(self, command):
-        command = command.strip()
-
+        command = str(command or "").strip()
         if not command:
             return "Please enter a command."
 
@@ -79,46 +82,69 @@ class CommandEngine:
                 )
             return self.execute_shell(command)
 
-        # ---------------------------------------------------------
-        # PHASE 5: PC CONTROL
-        # ---------------------------------------------------------
+        # --- Tool registry shortcuts (no AI needed) ---
+        handled, tool_result = self.tools.execute_command_shorthand(command)
+        if handled:
+            return tool_result
 
+        # ---------------------------------------------------------
+        # PC CONTROL
+        # ---------------------------------------------------------
         handled, response = self.pc.execute(command)
-
         if handled:
             return response
 
         # ---------------------------------------------------------
         # Built-in NEXUS commands
         # ---------------------------------------------------------
-
         if command_lower == "help":
             return self.help()
-
         if command_lower == "status":
             return self.status()
-
         if command_lower == "system":
             return self.system()
-
         if command_lower == "battery":
             return self.battery()
-
         if command_lower == "time":
             return self.time()
-
+        if command_lower == "date":
+            return self.date()
         if command_lower == "about":
             return self.about()
-
         if command_lower == "new":
             self.ai.clear_conversation()
             return "New conversation started."
-
         if command_lower == "clear":
             return "__CLEAR__"
 
-        # Everything else goes to the local AI
-        return self.ai.ask(command)
+        # Everything else goes to the AI
+        return self.ai.ask(command, conversation=[])
+
+    def execute_with_conversation(self, command, conversation=None):
+        """Execute with explicit conversation history (used by UI streaming path)."""
+        command = str(command or "").strip()
+        if not command:
+            return "Please enter a command."
+        lower = command.lower()
+        if lower in self.NEXUS_OPEN_COMMANDS:
+            return "__OPEN_NEXUS__"
+        if self.is_shell_command(command) and not self.pc.can_handle(command):
+            if self.shell.settings.confirm_risky_commands and self.shell.is_risky(command):
+                return (
+                    "This shell command is marked as risk-sensitive. "
+                    "Please confirm in the UI."
+                )
+            return self.execute_shell(command)
+        handled, tool_result = self.tools.execute_command_shorthand(command)
+        if handled:
+            return tool_result
+        handled, response = self.pc.execute(command)
+        if handled:
+            return response
+        # Built-ins handled via execute() would lose conversation, so we check again
+        if lower in {"help", "status", "system", "battery", "time", "date", "about", "clear", "new"}:
+            return self.execute(command)
+        return self.ai.ask(command, conversation=conversation)
 
     def help(self):
         return (
@@ -130,54 +156,41 @@ class CommandEngine:
             "| `system` | Show computer information |\n"
             "| `battery` | Show battery status |\n"
             "| `time` | Show current time |\n"
-            "| `about` | About Nexus |\n"
+            "| `date` | Show current date |\n"
+            "| `about` | About NEXUS |\n"
             "| `new` | Start a new AI conversation |\n"
             "| `clear` | Clear the activity console |\n\n"
-            "### NEXUS Activation\n\n"
+            "### Assistant Tools\n\n"
             "| Example | Action |\n"
             "|---|---|\n"
-            "| `open NEXUS` | Bring the NEXUS window to the foreground |\n"
-            "| `launch NEXUS` | Bring NEXUS to the foreground |\n"
-            "| `start NEXUS` | Bring NEXUS to the foreground |\n\n"
-            "### Voice Wake\n\n"
-            "Say `Hey NEXUS`, `Hey NEXUS open`, `NEXUS open up`, or `open`. The wake phrase is detected locally; the actual command is sent to online speech recognition.\n\n"
+            "| `what time is it` | Local time |\n"
+            "| `calculate 12*7` | Math evaluation |\n"
+            "| `5 km to miles` | Unit conversion |\n"
+            "| `search for Python tutorials` | Web search |\n"
+            "| `open github.com` | Open website |\n"
+            "| `remind me to call mom in 10 minutes` | Create reminder |\n"
+            "| `list reminders` | Show reminders |\n"
+            "| `delete reminder 2` | Delete reminder |\n"
+            "| `remember my name is Alex` | Save memory |\n"
+            "| `recall` | Show remembered facts |\n"
+            "| `system info` | Diagnostics |\n\n"
             "### PC Control\n\n"
             "| Example | Action |\n"
             "|---|---|\n"
             "| `open Calculator` | Launch Calculator |\n"
-            "| `open VS Code` | Launch Visual Studio Code |\n"
             "| `open Chrome` | Launch Google Chrome |\n"
             "| `open Documents` | Open Documents folder |\n"
-            "| `open Downloads` | Open Downloads folder |\n"
-            "| `open github.com` | Open GitHub |\n"
-            "| `go to youtube.com` | Open YouTube in the browser |\n"
-            "| `search for Python tutorials` | Search the web |\n"
-            "| `show desktop` | Show the Windows desktop |\n\n"
-            "| `minimize this window` | Minimize the active window |\n"
-            "| `maximize this window` | Maximize the active window |\n"
-            "| `restore this window` | Restore the active window |\n"
-            "| `close this window` | Close the active window |\n"
-            "| `switch to Chrome` | Switch to an open Chrome window |\n"
-            "| `switch to VS Code` | Switch to an open VS Code window |\n"
-            "| `focus Notepad` | Focus an open Notepad window |\n\n"
-            "| `type hello world` | Type text into the active application |\n"
+            "| `show desktop` | Show the Windows desktop |\n"
+            "| `type hello world` | Type text |\n"
             "| `press enter` | Press Enter |\n"
-            "| `press escape` | Press Escape |\n"
-            "| `press tab` | Press Tab |\n"
-            "| `press ctrl+c` | Copy selected content |\n"
-            "| `press ctrl+v` | Paste copied content |\n"
-            "| `press ctrl+s` | Save the current document |\n"
-            "| `press alt+tab` | Switch between applications |\n\n"
+            "| `press ctrl+c` | Copy |\n\n"
             "### Shell execution\n\n"
-            "Use `run ...`, `execute ...`, `powershell ...`, `cmd ...`, `terminal ...`, or `shell ...` "
-            "for explicit Windows command execution. You can also ask NEXUS natural-language questions "
-            "that require real Windows information; the AI can use the Windows tool when enabled in Settings. "
-            "Risk-sensitive commands are blocked until explicitly confirmed."
+            "Use `run ...`, `powershell ...`, `cmd ...`, `terminal ...` for explicit Windows commands. "
+            "Risk-sensitive commands require confirmation in Settings."
         )
 
     def status(self):
         info = SystemMonitor.get_system_info()
-
         return (
             "## SYSTEM STATUS\n\n"
             "| Metric | Value |\n"
@@ -200,12 +213,9 @@ class CommandEngine:
 
     def battery(self):
         battery = SystemMonitor.get_battery()
-
         if battery is None:
-            return "Battery information is unavailable."
-
+            return "Battery information is unavailable (desktop or no battery sensor)."
         charging = "Charging" if battery["charging"] else "Not charging"
-
         return (
             "## BATTERY\n\n"
             "| Metric | Value |\n"
@@ -216,14 +226,21 @@ class CommandEngine:
 
     def time(self):
         current_time = datetime.now().strftime("%H:%M:%S")
-        return "## CURRENT TIME\n\n" f"{current_time}"
+        return f"## CURRENT TIME\n\n{current_time}\n\n_{datetime.now().strftime('%A, %B %d, %Y')}_"
+
+    def date(self):
+        now = datetime.now()
+        return f"## TODAY\n\n{now.strftime('%A, %B %d, %Y')} — {now.strftime('%H:%M')}"
 
     def about(self):
+        from config.settings import APP_VERSION
         return (
-            "## ABOUT Nexus\n\n"
+            "## ABOUT NEXUS\n\n"
             "| Field | Value |\n"
             "|---|---|\n"
             "| Type | Personal Digital Command Center |\n"
-            "| Version | 0.4.0 |\n\n"
-            "Nexus is being built as a modular desktop and online assistant."
+            f"| Version | {APP_VERSION} |\n"
+            "| Creator | NSHUTI Emmanuel |\n\n"
+            "NEXUS is a modular desktop assistant with local AI (Ollama), optional online AI (Gemini), "
+            "voice I/O, reminders, and PC control."
         )

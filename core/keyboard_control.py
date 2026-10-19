@@ -124,10 +124,10 @@ class KeyboardController:
 
     def __init__(self):
         if os.name != "nt":
-            raise RuntimeError(
-                "Keyboard control is currently supported on Windows only."
-            )
-
+            self.user32 = None
+            self._is_stub = True
+            return
+        self._is_stub = False
         self.user32 = ctypes.windll.user32
 
         self.KEYEVENTF_KEYUP = 0x0002
@@ -141,6 +141,8 @@ class KeyboardController:
         Type text into the currently focused application.
         """
 
+        if getattr(self, '_is_stub', False):
+            return f"Keyboard control is available on Windows only. (Running on {__import__('platform').system()})"
         text = str(text or "")
 
         if not text:
@@ -156,6 +158,8 @@ class KeyboardController:
         Press one keyboard key.
         """
 
+        if getattr(self, '_is_stub', False):
+            return f"Keyboard control is available on Windows only. (Running on {__import__('platform').system()})"
         key = self._normalize_key(key)
 
         if key not in self.KEY_CODES:
@@ -167,6 +171,8 @@ class KeyboardController:
         return f"Pressed {key}."
 
     def press_shortcut(self, shortcut: str) -> str:
+        if getattr(self, '_is_stub', False):
+            return f"Keyboard control is available on Windows only. (Running on {__import__('platform').system()})"
         """
         Press a controlled keyboard shortcut.
         """

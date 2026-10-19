@@ -80,6 +80,9 @@ from config import settings as nexus_settings
 from ui.styles import DARK_THEME
 from ui.system_check_dialog import SystemCheckDialog
 from ui.settings_page import SettingsPage
+from core.reminders import ReminderService
+from core.memory import MemoryService
+from core.startup import greeting_text
 
 # ============================================================
 # CIRCULAR SYSTEM METER
@@ -1173,6 +1176,17 @@ class MainWindow(QMainWindow):
         self.shell_response_language = "auto"
         self.shell_command = ""
 
+        # Reminders & Memory
+        try:
+            self.reminder_service = ReminderService(on_due=self._on_reminder_due)
+            self.reminder_service.start_scheduler()
+        except Exception:
+            self.reminder_service = None
+        try:
+            self.memory_service = MemoryService()
+        except Exception:
+            self.memory_service = None
+
         # ----------------------------------------------------
         # THINKING INDICATOR
         # ----------------------------------------------------
@@ -1291,6 +1305,19 @@ class MainWindow(QMainWindow):
         except Exception:
             event.accept()
 
+    def shutdown(self):
+        """Graceful shutdown: stop schedulers and audio."""
+        try:
+            if getattr(self, "reminder_service", None):
+                self.reminder_service.stop_scheduler()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "kokoro_speech_queue", None):
+                self.kokoro_speech_queue.close()
+        except Exception:
+            pass
+
 
     # ========================================================
     # MAIN UI
@@ -1331,12 +1358,16 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage(self.settings, self)
         self.settings_page.settingsSaved.connect(self.apply_runtime_settings)
         self.settings_page.resetRequested.connect(self.apply_reset_preferences)
+        self.reminders_page = self.create_reminders_page()
+        self.memory_page = self.create_memory_page()
 
         self.page_stack.addWidget(self.dashboard_page)
         self.tool_dialogs = {}
         self.register_tool_dialog("assistant", self.assistant_page, "NEXUS ASSISTANT", 1000, 700)
         self.register_tool_dialog("system", self.system_page, "SYSTEM MONITOR", 980, 700)
         self.register_tool_dialog("activity", self.activity_page, "ACTIVITY LOG", 940, 680)
+        self.register_tool_dialog("reminders", self.reminders_page, "REMINDERS", 640, 600)
+        self.register_tool_dialog("memory", self.memory_page, "MEMORY", 640, 600)
         self.register_tool_dialog("settings", self.settings_page, "NEXUS SETTINGS", 820, 760)
         self.register_conversation_dialog()
 
@@ -1344,6 +1375,16 @@ class MainWindow(QMainWindow):
         self.global_clock_timer.timeout.connect(self.update_dashboard_clock)
         self.global_clock_timer.start(1000)
         self.update_dashboard_clock()
+        # Startup greeting
+        try:
+            if self.settings.get("greeting_enabled", True):
+                greet = greeting_text(self.settings)
+                self.add_activity(greet)
+                # Also set dashboard description if not replaced
+                if hasattr(self, "dashboard_greeting_label"):
+                    self.dashboard_greeting_label.setText(greet)
+        except Exception:
+            pass
         self.switch_page("dashboard")
 
     def register_tool_dialog(self, name, page, title, width, height):
@@ -1395,6 +1436,8 @@ class MainWindow(QMainWindow):
         for title, page_name in (
             ("Assistant", "assistant"),
             ("Conversation history", "conversations"),
+            ("Reminders", "reminders"),
+            ("Memory", "memory"),
             ("System monitor", "system"),
             ("Activity log", "activity"),
             ("Customize NEXUS", "customize"),
@@ -4797,6 +4840,265 @@ class MainWindow(QMainWindow):
 
     # ========================================================
     # ACTIVITY PAGE
+    # ========================================================
+    # REMINDERS & MEMORY PAGES
+    # ========================================================
+    def create_reminders_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        title = QLabel("REMINDERS")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        subtitle = QLabel("Create and manage reminders. They trigger while NEXUS is running.")
+        subtitle.setObjectName("mutedText")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        # Add row
+        add_row = QHBoxLayout()
+        self.reminder_title_input = QLineEdit()
+        self.reminder_title_input.setPlaceholderText("Reminder title, e.g. call mom")
+        self.reminder_title_input.setObjectName("searchInput")
+        self.reminder_due_input = QLineEdit()
+        self.reminder_due_input.setPlaceholderText("Due (optional): YYYY-MM-DD HH:MM or 'in 10 minutes'")
+        self.reminder_due_input.setObjectName("searchInput")
+        add_btn = QPushButton("Add")
+        add_btn.setObjectName("quickCommand")
+        add_btn.clicked.connect(self._add_reminder_from_ui)
+        add_row.addWidget(self.reminder_title_input, 2)
+        add_row.addWidget(self.reminder_due_input, 2)
+        add_row.addWidget(add_btn)
+        layout.addLayout(add_row)
+
+        self.reminders_list = QListWidget()
+        self.reminders_list.setObjectName("conversationList")
+        layout.addWidget(self.reminders_list, 1)
+
+        btn_row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setObjectName("dashboardLinkButton")
+        refresh_btn.clicked.connect(self.refresh_reminders_list)
+        complete_btn = QPushButton("Complete Selected")
+        complete_btn.setObjectName("dashboardLinkButton")
+        complete_btn.clicked.connect(self._complete_selected_reminder)
+        delete_btn = QPushButton("Delete Selected")
+        delete_btn.setObjectName("dashboardLinkButton")
+        delete_btn.clicked.connect(self._delete_selected_reminder)
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(complete_btn)
+        btn_row.addWidget(delete_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        # Auto-refresh when page shown
+        QTimer.singleShot(200, self.refresh_reminders_list)
+        return self._wrap_page_for_vertical_fit(page, "remindersScroll")
+
+    def create_memory_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        title = QLabel("MEMORY")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        subtitle = QLabel("Persistent facts NEXUS remembers. You control what is stored.")
+        subtitle.setObjectName("mutedText")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        add_row = QHBoxLayout()
+        self.memory_fact_input = QLineEdit()
+        self.memory_fact_input.setPlaceholderText("Remember this fact, e.g. my name is Alex")
+        self.memory_fact_input.setObjectName("searchInput")
+        add_btn = QPushButton("Remember")
+        add_btn.setObjectName("quickCommand")
+        add_btn.clicked.connect(self._add_memory_from_ui)
+        add_row.addWidget(self.memory_fact_input, 1)
+        add_row.addWidget(add_btn)
+        layout.addLayout(add_row)
+
+        self.memory_list = QListWidget()
+        self.memory_list.setObjectName("conversationList")
+        layout.addWidget(self.memory_list, 1)
+
+        btn_row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setObjectName("dashboardLinkButton")
+        refresh_btn.clicked.connect(self.refresh_memory_list)
+        delete_btn = QPushButton("Delete Selected")
+        delete_btn.setObjectName("dashboardLinkButton")
+        delete_btn.clicked.connect(self._delete_selected_memory)
+        clear_btn = QPushButton("Clear All")
+        clear_btn.setObjectName("dashboardLinkButton")
+        clear_btn.clicked.connect(self._clear_all_memory)
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(delete_btn)
+        btn_row.addWidget(clear_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        QTimer.singleShot(200, self.refresh_memory_list)
+        return self._wrap_page_for_vertical_fit(page, "memoryScroll")
+
+    def refresh_reminders_list(self):
+        if not hasattr(self, "reminders_list") or self.reminder_service is None:
+            return
+        self.reminders_list.clear()
+        try:
+            items = self.reminder_service.list(include_completed=False, limit=100)
+            if not items:
+                it = QListWidgetItem("No pending reminders — add one above.")
+                it.setFlags(it.flags() & ~Qt.ItemIsSelectable)
+                self.reminders_list.addItem(it)
+                return
+            for r in items:
+                due = f" • due {r['due_at']}" if r.get("due_at") else " • no due date"
+                text = f"#{r['id']}: {r['title']}{due}"
+                item = QListWidgetItem(text)
+                item.setData(Qt.UserRole, r["id"])
+                self.reminders_list.addItem(item)
+        except Exception as e:
+            self.reminders_list.addItem(f"Error: {e}")
+
+    def _add_reminder_from_ui(self):
+        title = self.reminder_title_input.text().strip()
+        due = self.reminder_due_input.text().strip()
+        if not title:
+            QMessageBox.information(self, "Reminder", "Enter a reminder title.")
+            return
+        try:
+            rid = self.reminder_service.create(title, due if due else None)
+            self.add_activity(f"Reminder #{rid} created: {title}")
+            self.reminder_title_input.clear()
+            self.reminder_due_input.clear()
+            self.refresh_reminders_list()
+        except Exception as e:
+            QMessageBox.warning(self, "Reminder", str(e))
+
+    def _complete_selected_reminder(self):
+        item = self.reminders_list.currentItem()
+        if not item:
+            return
+        rid = item.data(Qt.UserRole)
+        if not rid:
+            return
+        try:
+            self.reminder_service.complete(int(rid))
+            self.add_activity(f"Reminder #{rid} completed.")
+            self.refresh_reminders_list()
+        except Exception as e:
+            QMessageBox.warning(self, "Reminder", str(e))
+
+    def _delete_selected_reminder(self):
+        item = self.reminders_list.currentItem()
+        if not item:
+            return
+        rid = item.data(Qt.UserRole)
+        if not rid:
+            return
+        try:
+            self.reminder_service.delete(int(rid))
+            self.add_activity(f"Reminder #{rid} deleted.")
+            self.refresh_reminders_list()
+        except Exception as e:
+            QMessageBox.warning(self, "Reminder", str(e))
+
+    def refresh_memory_list(self):
+        if not hasattr(self, "memory_list") or self.memory_service is None:
+            return
+        self.memory_list.clear()
+        try:
+            facts = self.memory_service.list_facts(limit=100)
+            if not facts:
+                it = QListWidgetItem("Nothing remembered yet.")
+                it.setFlags(it.flags() & ~Qt.ItemIsSelectable)
+                self.memory_list.addItem(it)
+                return
+            for f in facts:
+                text = f"#{f['id']}: {f['fact']} — {f['created_at']}"
+                item = QListWidgetItem(text)
+                item.setData(Qt.UserRole, f["id"])
+                self.memory_list.addItem(item)
+        except Exception as e:
+            self.memory_list.addItem(f"Error: {e}")
+
+    def _add_memory_from_ui(self):
+        fact = self.memory_fact_input.text().strip()
+        if not fact:
+            QMessageBox.information(self, "Memory", "Enter a fact to remember.")
+            return
+        try:
+            fid = self.memory_service.remember_fact(fact)
+            self.add_activity(f"Memory saved (#{fid}): {fact}")
+            self.memory_fact_input.clear()
+            self.refresh_memory_list()
+        except Exception as e:
+            QMessageBox.warning(self, "Memory", str(e))
+
+    def _delete_selected_memory(self):
+        item = self.memory_list.currentItem()
+        if not item:
+            return
+        fid = item.data(Qt.UserRole)
+        if not fid:
+            return
+        try:
+            self.memory_service.delete_fact(int(fid))
+            self.add_activity(f"Memory #{fid} deleted.")
+            self.refresh_memory_list()
+        except Exception as e:
+            QMessageBox.warning(self, "Memory", str(e))
+
+    def _clear_all_memory(self):
+        ret = QMessageBox.question(self, "Clear Memory", "Delete all remembered facts? This cannot be undone.", QMessageBox.Yes | QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        try:
+            self.memory_service.clear_facts()
+            self.add_activity("All memories cleared.")
+            self.refresh_memory_list()
+        except Exception as e:
+            QMessageBox.warning(self, "Memory", str(e))
+
+    def _on_reminder_due(self, reminder):
+        # Called from background thread; marshal to UI thread
+        try:
+            QTimer.singleShot(0, lambda r=reminder: self._handle_reminder_due_ui(r))
+        except Exception:
+            pass
+
+    def _handle_reminder_due_ui(self, reminder):
+        title = getattr(reminder, "title", str(reminder))
+        msg = f"Reminder: {title}"
+        self.add_activity(f"🔔 Reminder due: {title}")
+        # Status badge
+        try:
+            self.global_status_badge.setText("● REMINDER")
+            self.global_status_badge.setStyleSheet("color: #ffb84d;")
+            QTimer.singleShot(8000, lambda: self.global_status_badge.setText("● ONLINE"))
+        except Exception:
+            pass
+        # Non-modal notification
+        try:
+            QMessageBox.information(self, "NEXUS Reminder", msg)
+        except Exception:
+            pass
+        # Optional voice
+        if self.voice_enabled:
+            try:
+                self._speak_reminder(title)
+            except Exception:
+                pass
+        self.refresh_reminders_list()
+
+    def _speak_reminder(self, text):
+        # Fire-and-forget via kokoro or fallback
+        if self.kokoro_speech_queue and self.kokoro_speech_queue.available:
+            self.kokoro_speech_queue.enqueue(f"Reminder: {text}", self.current_voice_language)
+
     # ========================================================
 
     def create_activity_page(self):
