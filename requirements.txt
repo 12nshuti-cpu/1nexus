@@ -1,0 +1,9 @@
+PySide6>=6.8
+psutil>=6.0
+requests>=2.32
+markdown>=3.7
+sounddevice>=0.5
+numpy>=2.0
+faster-whisper>=1.1
+websocket-client>=1.8
+google-genai>=1.0
