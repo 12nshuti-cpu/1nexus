@@ -34,13 +34,18 @@ class WindowController:
 
     def __init__(self):
         if os.name != "nt":
-            raise RuntimeError(
-                "Window control is currently supported on Windows only."
-            )
-
+            self.user32 = None
+            self._is_stub = True
+            return
+        self._is_stub = False
         self.user32 = ctypes.windll.user32
 
+    def _require_windows(self, action: str = "This window action"):
+        return f"{action} is available on Windows only. (Running on {__import__('platform').system()})"
+
     def minimize_active(self):
+        if getattr(self, "_is_stub", False):
+            return self._require_windows("Minimize window")
         hwnd = self._foreground_window()
         if not hwnd:
             return "There is no active window to minimize."
@@ -48,6 +53,8 @@ class WindowController:
         return "Active window minimized."
 
     def maximize_active(self):
+        if getattr(self, "_is_stub", False):
+            return self._require_windows("Maximize window")
         hwnd = self._foreground_window()
         if not hwnd:
             return "There is no active window to maximize."
@@ -55,6 +62,8 @@ class WindowController:
         return "Active window maximized."
 
     def restore_active(self):
+        if getattr(self, "_is_stub", False):
+            return self._require_windows("Restore window")
         hwnd = self._foreground_window()
         if not hwnd:
             return "There is no active window to restore."
@@ -62,6 +71,8 @@ class WindowController:
         return "Active window restored."
 
     def close_active(self):
+        if getattr(self, "_is_stub", False):
+            return self._require_windows("Close window")
         hwnd = self._foreground_window()
         if not hwnd:
             return "There is no active window to close."
@@ -69,6 +80,8 @@ class WindowController:
         return "Close request sent to the active window."
 
     def show_desktop(self):
+        if getattr(self, "_is_stub", False):
+            return self._require_windows("Show desktop")
         self.user32.keybd_event(self.VK_LWIN, 0, 0, 0)
         self.user32.keybd_event(self.VK_D, 0, 0, 0)
         self.user32.keybd_event(self.VK_D, 0, self.KEYEVENTF_KEYUP, 0)

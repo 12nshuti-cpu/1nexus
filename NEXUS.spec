@@ -1,14 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('models', 'models'), ('data', 'data')]
+datas = [('models', 'models'), ('data', 'data'), ('assets', 'assets'), ('config', 'config'), ('ui', 'ui'), ('core', 'core'), ('database', 'database')]
 binaries = []
 hiddenimports = []
-tmp_ret = collect_all('faster_whisper')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('ctranslate2')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-
+# Collect optional heavy deps if present - graceful fallback if not installed
+for pkg in ('faster_whisper', 'ctranslate2', 'onnxruntime'):
+    try:
+        tmp = collect_all(pkg)
+        datas += tmp[0]; binaries += tmp[1]; hiddenimports += tmp[2]
+    except Exception:
+        pass
+hiddenimports += [
+    'markdown',
+    'sounddevice',
+    'psutil',
+    'requests',
+    'websocket',
+    'core.providers',
+    'core.memory',
+    'core.reminders',
+    'core.tools',
+    'core.logger',
+    'core.startup',
+]
 
 a = Analysis(
     ['app.py'],
@@ -19,7 +34,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['tkinter', 'matplotlib'],
     noarchive=False,
     optimize=0,
 )

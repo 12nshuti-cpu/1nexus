@@ -20,11 +20,15 @@ class MouseController:
 
     def __init__(self):
         if os.name != "nt":
-            raise RuntimeError("Mouse control is currently supported on Windows only.")
-
+            self.user32 = None
+            self._is_stub = True
+            return
+        self._is_stub = False
         self.user32 = ctypes.windll.user32
 
     def move_to(self, x: int, y: int) -> str:
+        if getattr(self, '_is_stub', False):
+            return f"Mouse control is available on Windows only. (Running on {__import__('platform').system()})"
         x, y = self._clamp_coordinates(x, y)
         if not self.user32.SetCursorPos(x, y):
             return f"Could not move the mouse to ({x}, {y})."
@@ -35,21 +39,29 @@ class MouseController:
         return self.move_to(current_x + dx, current_y + dy)
 
     def click(self) -> str:
+        if getattr(self, '_is_stub', False):
+            return f"Mouse control is available on Windows only. (Running on {__import__('platform').system()})"
         self._mouse_event(self.LEFTDOWN)
         self._mouse_event(self.LEFTUP)
         return "Left click performed."
 
     def double_click(self) -> str:
+        if getattr(self, '_is_stub', False):
+            return f"Mouse control is available on Windows only. (Running on {__import__('platform').system()})"
         self.click()
         self.click()
         return "Double-click performed."
 
     def right_click(self) -> str:
+        if getattr(self, '_is_stub', False):
+            return f"Mouse control is available on Windows only. (Running on {__import__('platform').system()})"
         self._mouse_event(self.RIGHTDOWN)
         self._mouse_event(self.RIGHTUP)
         return "Right click performed."
 
     def scroll(self, amount: int) -> str:
+        if getattr(self, '_is_stub', False):
+            return f"Mouse control is available on Windows only. (Running on {__import__('platform').system()})"
         amount = int(amount)
         if amount == 0:
             return "Scroll amount must not be zero."

@@ -9,9 +9,9 @@ from PySide6.QtCore import QSettings
 
 
 APP_NAME = "NEXUS"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 APP_PUBLISHER = "NEXUS"
-APP_URL = "https://github.com/emmynshuti1"
+APP_URL = "https://github.com/12nshuti-cpu/1nexus"
 
 # ------------------------------------------------------------
 # Paths
@@ -33,7 +33,19 @@ MODELS_DIR = RESOURCE_ROOT / "models"
 MODELFILE_PATH = MODELS_DIR / "Modelfile"
 ASSETS_DIR = RESOURCE_ROOT / "assets"
 
-USER_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NEXUS"
+def _user_data_dir() -> Path:
+    """Resolve per-user data dir cross-platform (Windows LOCALAPPDATA else XDG)."""
+    lad = os.environ.get("LOCALAPPDATA")
+    if lad:
+        return Path(lad) / "NEXUS"
+    # Linux/mac fallback: honor XDG or HOME
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "NEXUS"
+    return Path.home() / ".local" / "share" / "NEXUS" if os.name != "nt" else Path.home() / "NEXUS"
+
+
+USER_DATA_DIR = _user_data_dir()
 USER_CONFIG_DIR = USER_DATA_DIR / "config"
 USER_LOG_DIR = USER_DATA_DIR / "logs"
 USER_DB_DIR = USER_DATA_DIR / "data"
@@ -171,6 +183,13 @@ class NEXUSSettings:
         "user_name": "",
         "ui_accent": "#45d9ff",
         "start_with_windows": False,
+        "notifications_enabled": True,
+        "greeting_enabled": True,
+        "theme": "dark",
+        "minimize_to_tray": True,
+        "kokoro_enabled": False,
+        "kokoro_voice": "af_heart",
+        "kokoro_speed": 1.0,
     }
 
     def __init__(self):
