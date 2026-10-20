@@ -20,13 +20,9 @@ def get_gemini_api_key() -> str:
         if value:
             return value
 
-    try:
-        path = gemini_api_key_path()
-        if path.is_file():
-            return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
-    return ""
+    from core.credentials import get_secret
+
+    return get_secret("gemini_api_key")
 
 
 def gemini_api_key_path() -> Path:
@@ -41,15 +37,18 @@ def gemini_api_key_path() -> Path:
     return base / "NEXUS" / "gemini_api_key.txt"
 
 
-def set_gemini_api_key(api_key: str) -> Path:
-    """Save a Gemini key outside the repository and return its local path."""
+def set_gemini_api_key(api_key: str) -> str:
+    """Save a Gemini key in the system credential store.
+
+    Returns a short description of where it was stored. The key is never
+    written inside the program folder or a source checkout.
+    """
     value = str(api_key or "").strip()
     if not value:
         raise ValueError("The Gemini API key cannot be empty.")
-    path = gemini_api_key_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value + "\n", encoding="utf-8")
-    return path
+    from core.credentials import set_secret
+
+    return set_secret("gemini_api_key", value)
 
 
 def gemini_is_configured() -> bool:

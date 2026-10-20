@@ -15,6 +15,20 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 
+class _UnavailableController:
+    """Returned in place of a controller that could not be initialised."""
+
+    def __init__(self, label: str, reason: str):
+        self._label = label
+        self._reason = reason
+
+    def __getattr__(self, _name):
+        def _unavailable(*_args, **_kwargs) -> str:
+            return f"{self._label} is not available on this computer. {self._reason}".strip()
+
+        return _unavailable
+
+
 class PCController:
     """
     Controlled Windows PC-control layer for NEXUS.
@@ -29,9 +43,9 @@ class PCController:
     """
     
     def __init__(self):
-        self.window = WindowController()
-        self.keyboard = KeyboardController()
-        self.mouse = MouseController()
+        self.window = self._safe_controller(WindowController, "Window control")
+        self.keyboard = self._safe_controller(KeyboardController, "Keyboard control")
+        self.mouse = self._safe_controller(MouseController, "Mouse control")
         self.last_process_id = None
         self.last_folder_path = None
         self.last_browser = None
@@ -204,6 +218,19 @@ class PCController:
 
     def is_windows(self) -> bool:
         return os.name == "nt"
+
+    @staticmethod
+    def _safe_controller(factory, label: str):
+        """Build a Windows controller, or an honest 'unavailable' stand-in.
+
+        One unavailable controller (non-Windows host, missing API) must not
+        take down the whole command engine. The stand-in never pretends an
+        action succeeded: every call returns a plain explanation instead.
+        """
+        try:
+            return factory()
+        except Exception as error:  # noqa: BLE001
+            return _UnavailableController(label, str(error))
 
     @staticmethod
     def _clean_target(text: str) -> str:

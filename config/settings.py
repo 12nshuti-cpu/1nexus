@@ -171,6 +171,14 @@ class NEXUSSettings:
         "user_name": "",
         "ui_accent": "#45d9ff",
         "start_with_windows": False,
+        # Personalization / privacy
+        "personalization_enabled": True,
+        "share_memory_with_online": False,
+        # Reminders
+        "reminder_notifications": True,
+        "speak_reminders": True,
+        # Onboarding
+        "first_run_completed": False,
     }
 
     def __init__(self):
@@ -326,6 +334,51 @@ class NEXUSSettings:
     @start_with_windows.setter
     def start_with_windows(self, value: bool) -> None:
         self.set("start_with_windows", bool(value))
+
+    # -- personalization / privacy -------------------------------------
+    @property
+    def personalization_enabled(self) -> bool:
+        """Master switch: when off NEXUS neither saves nor uses memories."""
+        return self.boolean("personalization_enabled")
+
+    @personalization_enabled.setter
+    def personalization_enabled(self, value: bool) -> None:
+        self.set("personalization_enabled", bool(value))
+
+    @property
+    def share_memory_with_online(self) -> bool:
+        """Off by default: saved memories stay on this PC and are not sent to cloud AI."""
+        return self.boolean("share_memory_with_online")
+
+    @share_memory_with_online.setter
+    def share_memory_with_online(self, value: bool) -> None:
+        self.set("share_memory_with_online", bool(value))
+
+    # -- reminders -------------------------------------------------------
+    @property
+    def reminder_notifications(self) -> bool:
+        return self.boolean("reminder_notifications")
+
+    @reminder_notifications.setter
+    def reminder_notifications(self, value: bool) -> None:
+        self.set("reminder_notifications", bool(value))
+
+    @property
+    def speak_reminders(self) -> bool:
+        return self.boolean("speak_reminders")
+
+    @speak_reminders.setter
+    def speak_reminders(self, value: bool) -> None:
+        self.set("speak_reminders", bool(value))
+
+    # -- onboarding --------------------------------------------------------
+    @property
+    def first_run_completed(self) -> bool:
+        return self.boolean("first_run_completed")
+
+    @first_run_completed.setter
+    def first_run_completed(self, value: bool) -> None:
+        self.set("first_run_completed", bool(value))
 
     def reset(self) -> None:
         for key in self.DEFAULTS:

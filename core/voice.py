@@ -57,7 +57,12 @@ from typing import Optional
 
 import requests
 
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError) as _audio_import_error:  # PortAudio missing/unusable
+    from core.audio_compat import MissingSoundDevice
+
+    sd = MissingSoundDevice(_audio_import_error)
 
 try:
 
@@ -417,14 +422,8 @@ class VoiceService:
 
 
 
-        project_dir = Path(__file__).resolve().parent.parent
-
-        for filename in cls.API_KEY_FILE_NAMES:
-
-            paths.append(project_dir / filename)
-
-
-
+        # The project/program folder is deliberately NOT searched: a key file
+        # there is one `git add .` away from being published or installed.
         return paths
 
 
@@ -443,31 +442,15 @@ class VoiceService:
 
 
 
-        for path in cls._candidate_key_files():
+        from core.credentials import get_secret
 
-            try:
-
-                if path.is_file():
-
-                    value = path.read_text(encoding="utf-8").strip()
-
-                    if value:
-
-                        return value
-
-            except OSError:
-
-                continue
-
-
-
-        return ""
+        return get_secret("openai_api_key", cls._candidate_key_files())
 
 
 
     @classmethod
 
-    def set_api_key(cls, api_key: str) -> Path:
+    def set_api_key(cls, api_key: str) -> str:
 
         api_key = str(api_key or "").strip()
 
@@ -477,21 +460,9 @@ class VoiceService:
 
 
 
-        local_app_data = os.environ.get("LOCALAPPDATA")
+        from core.credentials import set_secret
 
-        if not local_app_data:
-
-            raise RuntimeError("LOCALAPPDATA is not available on this Windows account.")
-
-
-
-        path = Path(local_app_data) / "NEXUS" / "openai_api_key.txt"
-
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        path.write_text(api_key + "\n", encoding="utf-8")
-
-        return path
+        return set_secret("openai_api_key", api_key)
 
 
 

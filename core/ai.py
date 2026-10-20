@@ -23,6 +23,7 @@ from config import settings
 from config.settings import NEXUSSettings
 
 from core.shell_executor import ShellExecutor
+from core.shell_policy import evaluate_ai_command
 
 from core.gemini_engine import GeminiUnavailable, generate_text, gemini_is_configured
 
@@ -981,16 +982,25 @@ class AIService:
 
 
         request = self.shell.prepare(
-
             tool_call["command"],
-
             default_shell=tool_call["shell"],
-
         )
-
         if request is None:
-
             return "TOOL NOT EXECUTED. NEXUS could not prepare the Windows command."
+
+        # Model output is untrusted. Unless the command is one of NEXUS's own
+        # built-in inspection commands (trusted), it may only run unattended if
+        # it is a plain read-only pipeline (see core/shell_policy.py).
+        if not tool_call.get("trusted"):
+            decision = evaluate_ai_command(request.command, request.shell)
+            if not decision.allowed:
+                return (
+                    "TOOL NOT EXECUTED. NEXUS only lets the AI run read-only inspection commands "
+                    f"by itself. {decision.reason} "
+                    "Tell the user the command was NOT run. If they want it run, they can type it "
+                    "themselves as `run <command>` and NEXUS will ask them to confirm. "
+                    f"Requested command: {request.command}"
+                )
 
 
 
@@ -1181,8 +1191,10 @@ class AIService:
 
 
         if tool_call is None:
-
             tool_call = self._fallback_tool(message)
+            if tool_call is not None:
+                # NEXUS's own fixed inspection commands (no user text inside).
+                tool_call["trusted"] = True
 
 
 

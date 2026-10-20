@@ -7,8 +7,8 @@ from pathlib import Path
 
 class Database:
 
-    def __init__(self):
-        self.data_dir = self.get_data_directory()
+    def __init__(self, data_dir=None):
+        self.data_dir = Path(data_dir) if data_dir else self.get_data_directory()
 
         self.data_dir.mkdir(
             parents=True,
@@ -62,30 +62,13 @@ class Database:
     # ========================================================
 
     def seed_database_if_needed(self):
+        """Intentionally does nothing.
 
-        if self.db_path.exists():
-
-            return
-
-        bundled_database = self.get_bundled_database()
-
-        if not bundled_database.exists():
-
-            return
-
-        try:
-
-            shutil.copy2(
-                bundled_database,
-                self.db_path,
-            )
-
-        except Exception as error:
-
-            print(
-                "NEXUS database seed error:",
-                error,
-            )
+        Earlier builds copied a bundled ``data/nexus.db`` (the developer's own
+        conversations) into every new installation. User data must never ship
+        inside the application, so a fresh install always starts empty.
+        """
+        return
 
     # ========================================================
     # DATABASE CONNECTION

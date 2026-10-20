@@ -70,6 +70,15 @@ class ShellExecutor:
         r"\b(net\s+user)\b",
         r"\b(sc\s+delete)\b",
         r"\b(schtasks\s+/delete)\b",
+        # Code download / indirect execution / persistence / tampering
+        r"\b(iex|invoke-expression)\b",
+        r"\b(invoke-webrequest|iwr|invoke-restmethod|irm|curl|wget|start-bitstransfer)\b",
+        r"\b(downloadstring|downloadfile|downloaddata)\b",
+        r"\b(start-process|invoke-command|invoke-item|new-service|register-scheduledtask)\b",
+        r"(^|\s)-(enc|encodedcommand|ec)\b",
+        r"\b(certutil|bitsadmin|mshta|rundll32|regsvr32|wmic|vssadmin|cipher\s+/w|wevtutil\s+cl)\b",
+        r"\b(netsh\s+(advfirewall|firewall)|add-mppreference|set-itemproperty|new-itemproperty)\b",
+        r"\b(set-content|add-content|out-file|move-item|rename-item|copy-item)\b|>\s*\S",
     )
 
     def __init__(self, settings: NEXUSSettings | None = None):
