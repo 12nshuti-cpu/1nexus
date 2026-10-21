@@ -133,8 +133,15 @@ _WORD_OPS = (
 )
 
 
+_FACTORIAL_POSTFIX = re.compile(r"(?<![\w.])(\d+)\s*!(?!=)")
+
+
 def normalize_expression(text: str) -> str:
-    value = str(text or "").strip().rstrip("?=.! ").strip()
+    value = str(text or "").strip()
+    # "5!" is a factorial. This must happen before trailing punctuation is trimmed,
+    # otherwise the "!" is thrown away and 5! silently evaluates to 5.
+    value = _FACTORIAL_POSTFIX.sub(lambda m: f"factorial({m.group(1)})", value)
+    value = value.rstrip("?=.! ").strip()
     value = re.sub(r"^(?:what(?:'s| is)|calculate|compute|calc|how much is|solve)\s+", "", value, flags=re.IGNORECASE)
     value = _PERCENT_OF.sub(lambda m: f"({m.group(1)}/100)*", value)
     for pattern, replacement in _WORD_OPS:

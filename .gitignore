@@ -27,3 +27,7 @@ data/*.db-shm
 Thumbs.db
 .DS_Store
 *.backup
+
+# Local build environment and stray test audio
+.venv-build/
+/kokoro*.wav

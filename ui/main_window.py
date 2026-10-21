@@ -863,47 +863,116 @@ class MiniSparklineWidget(QWidget):
 
 
 class VoiceCaptureWorker(QThread):
-    """Keeps multilingual microphone capture off the interface thread."""
+    """Keeps microphone capture and speech recognition off the interface thread.
+
+    Two routes, chosen by :meth:`route`:
+
+    * ``local``  - record with the microphone, transcribe on this computer with
+      faster-whisper, then hand the text to the normal NEXUS pipeline
+      (``captured``). Tools, memory and the speech engine all apply.
+    * ``gemini`` - the existing Gemini Live voice turn (online, needs a key).
+    """
 
     captured = Signal(str, str)
     geminiCompleted = Signal(str, str, bytes)
     failed = Signal(str)
+    status = Signal(str)
 
-    def __init__(self, language="auto", engine="automatic", conversation=None, parent=None):
+    NO_SPEECH = "No speech detected."
+
+    def __init__(self, language="auto", engine="automatic", conversation=None, parent=None, settings=None):
         super().__init__(parent)
         self.language = str(language or "auto")
         self.engine = str(engine or "automatic")
         self.conversation = list(conversation or [])
+        self.settings = settings
+        self._recorder = None
+        self._cancelled = False
 
+    @staticmethod
+    def route(engine):
+        """'local' (on-device speech recognition) or 'gemini' (Gemini Live)."""
+        from core.gemini_engine import gemini_is_configured
+
+        engine = str(engine or "automatic")
+        if engine == "local":
+            return "local"
+        if engine == "automatic" and not gemini_is_configured():
+            return "local"
+        return "gemini"
+
+    # -- control from the UI thread ------------------------------------------
+    def finish_listening(self):
+        """Stop recording now and transcribe what was heard."""
+        recorder = self._recorder
+        if recorder is not None:
+            recorder.finish()
+
+    def cancel(self):
+        """Stop recording and throw the audio away."""
+        self._cancelled = True
+        recorder = self._recorder
+        if recorder is not None:
+            recorder.cancel()
+
+    # -- worker thread ----------------------------------------------------------
     def run(self):
         try:
-            from core.gemini_engine import GeminiUnavailable, gemini_is_configured, live_microphone_turn
-            from config import settings as app_settings
-            import asyncio
-
-            if self.engine in {"online", "automatic"}:
-                if not gemini_is_configured():
-                    if self.engine == "online":
-                        raise GeminiUnavailable("Gemini Live voice needs an API key. Set GEMINI_API_KEY or save it to %LOCALAPPDATA%\\NEXUS\\gemini_api_key.txt.")
-                    raise GeminiUnavailable("Gemini Live is not configured. Voice fallback is unavailable locally; type your request to use the installed Ollama model offline.")
-                transcript, answer, audio = asyncio.run(live_microphone_turn(
-                    app_settings.load_system_prompt(),
-                    self.conversation,
-                ))
-                if not answer:
-                    raise GeminiUnavailable("Gemini Live returned no spoken response. Try again or type your request.")
-                self.geminiCompleted.emit(transcript or "Voice message", answer, audio)
-                if audio:
-                    import numpy as np
-                    import sounddevice as sd
-                    sd.play(np.frombuffer(audio, dtype=np.int16), samplerate=24000)
-                    sd.wait()
-                return
-
-            raise GeminiUnavailable("Local speech recognition is not configured. Type your request to use NEXUS locally; Gemini Live requires Online or Automatic mode and an API key.")
-
+            if self.route(self.engine) == "local":
+                self._run_local()
+            else:
+                self._run_gemini()
         except Exception as error:  # noqa: BLE001
             self.failed.emit(str(error))
+
+    def _run_local(self):
+        from core.stt import EndpointConfig, LocalTranscriber, MicrophoneRecorder
+
+        settings = self.settings
+        push_to_talk = bool(settings.push_to_talk) if settings is not None else False
+        device = settings.microphone_device if settings is not None else None
+        model = settings.stt_model if settings is not None else "base"
+        config = EndpointConfig(auto_stop=not push_to_talk, max_seconds=120.0 if push_to_talk else 30.0)
+
+        self.status.emit("Listening - click the microphone again when you are done." if push_to_talk
+                         else "Listening - just speak; I will stop when you pause.")
+        self._recorder = MicrophoneRecorder(device=device, config=config)
+        audio = self._recorder.record()
+        self._recorder = None
+        if audio is None:
+            note = "Listening cancelled." if self._cancelled else ""
+            self.captured.emit(f"{self.NO_SPEECH} {note}".strip(), "auto")
+            return
+
+        self.status.emit("Transcribing...")
+        text, detected = LocalTranscriber(model, status=self.status.emit).transcribe(audio, self.language)
+        if not text:
+            self.captured.emit(self.NO_SPEECH, "auto")
+            return
+        self.captured.emit(text, self.language if self.language != "auto" else detected)
+
+    def _run_gemini(self):
+        from core.gemini_engine import GeminiUnavailable, gemini_is_configured, live_microphone_turn
+        from config import settings as app_settings
+        import asyncio
+
+        if not gemini_is_configured():
+            raise GeminiUnavailable(
+                "Gemini Live voice needs an API key. Add it in Settings or set the GEMINI_API_KEY environment variable. "
+                "Choose Automatic or Local mode to use on-device speech recognition instead."
+            )
+        transcript, answer, audio = asyncio.run(live_microphone_turn(
+            app_settings.load_system_prompt(),
+            self.conversation,
+        ))
+        if not answer:
+            raise GeminiUnavailable("Gemini Live returned no spoken response. Try again or type your request.")
+        self.geminiCompleted.emit(transcript or "Voice message", answer, audio)
+        if audio:
+            import numpy as np
+            import sounddevice as sd
+            sd.play(np.frombuffer(audio, dtype=np.int16), samplerate=24000)
+            sd.wait()
 
 
 # ============================================================
@@ -1269,27 +1338,6 @@ class MainWindow(QMainWindow):
     def set_background_voice(self, service):
         """Attach the process-wide background voice service."""
         self.background_voice = service
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-
-        # Keep the assistant rail compact on smaller windows instead of
-        # squeezing the conversation canvas until text becomes unreadable.
-        if hasattr(self, "assistant_rail"):
-            available = max(0, self.width() - getattr(self, "sidebar", QWidget()).width() - 360)
-            rail_width = 190 if available < 520 else 225
-            rail_width = min(270, rail_width)
-            self.assistant_rail.setMinimumWidth(rail_width)
-            self.assistant_rail.setMaximumWidth(rail_width)
-
-        # Recalculate conversation item heights after the sidebar changes
-        # width, so wrapped titles receive enough vertical room.
-        if hasattr(self, "conversation_list"):
-            for index in range(self.conversation_list.count()):
-                item = self.conversation_list.item(index)
-                row = self.conversation_list.itemWidget(item)
-                if row is not None:
-                    item.setSizeHint(QSize(0, max(58, row.sizeHint().height() + 2)))
 
     def closeEvent(self, event):
         try:
@@ -3326,8 +3374,16 @@ class MainWindow(QMainWindow):
             self.add_activity("Nexus voice output disabled.")
 
     def capture_voice_command(self):
-        if hasattr(self, "voice_worker") and self.voice_worker.isRunning():
+        worker = getattr(self, "voice_worker", None)
+        if worker is not None and worker.isRunning():
+            # A second click while listening means "I am done talking".
+            worker.finish_listening()
             return
+
+        # Speaking over NEXUS interrupts it, and also keeps its own voice out of the microphone.
+        if self.voice_output_active:
+            self.interrupt_voice_output()
+        local_route = VoiceCaptureWorker.route(self.settings.ai_engine) == "local"
 
         # The background wake listener uses the same microphone. Pause it
         # before the foreground voice capture starts.
@@ -3348,19 +3404,19 @@ class MainWindow(QMainWindow):
         if hasattr(self, "assistant_status"):
             self.assistant_status.setText("● LISTENING")
         if hasattr(self, "mic_button"):
-            self.mic_button.setEnabled(False)
+            self.mic_button.setEnabled(local_route)
             self._set_button_icon(self.mic_button, "mic")
             self.mic_button.setProperty("listening", True)
             self.mic_button.style().unpolish(self.mic_button)
             self.mic_button.style().polish(self.mic_button)
-            self.mic_button.setToolTip("NEXUS is listening...")
+            self.mic_button.setToolTip("Listening - click to stop, Esc to cancel" if local_route else "NEXUS is listening...")
         if hasattr(self, "assistant_mic_button"):
-            self.assistant_mic_button.setEnabled(False)
+            self.assistant_mic_button.setEnabled(local_route)
             self._set_button_icon(self.assistant_mic_button, "mic")
             self.assistant_mic_button.setProperty("listening", True)
             self.assistant_mic_button.style().unpolish(self.assistant_mic_button)
             self.assistant_mic_button.style().polish(self.assistant_mic_button)
-            self.assistant_mic_button.setToolTip("NEXUS is listening...")
+            self.assistant_mic_button.setToolTip("Listening - click to stop, Esc to cancel" if local_route else "NEXUS is listening...")
 
         language_name = {
             "auto": "Automatic",
@@ -3374,18 +3430,16 @@ class MainWindow(QMainWindow):
             "rw": "Kinyarwanda",
         }.get(language, language)
 
-        from core.gemini_engine import gemini_is_configured
-        if self.settings.ai_engine in {"automatic", "online"} and gemini_is_configured():
-            voice_route = "Gemini Live online"
-        elif self.settings.ai_engine == "local":
-            voice_route = "Local mode selected (offline speech recognition is not configured)"
+        if local_route:
+            voice_route = "on-device speech recognition"
         else:
-            voice_route = "Gemini Live unavailable; voice will report setup requirements"
+            voice_route = "Gemini Live online"
         self.add_activity(f"Microphone active — {voice_route} ({language_name})…")
 
         current = self.conversation_manager.get_messages(self.current_conversation_id) if self.current_conversation_id is not None else []
         history = [{"role": item.get("role", "user"), "content": item.get("content", "")} for item in current[-12:]]
-        self.voice_worker = VoiceCaptureWorker(language, self.settings.ai_engine, history, self)
+        self.voice_worker = VoiceCaptureWorker(language, self.settings.ai_engine, history, self, settings=self.settings)
+        self.voice_worker.status.connect(self.add_activity)
         self.voice_worker.captured.connect(self.handle_voice_command)
         self.voice_worker.geminiCompleted.connect(self.handle_gemini_voice_result)
         self.voice_worker.failed.connect(self.handle_voice_error)
@@ -3454,6 +3508,12 @@ class MainWindow(QMainWindow):
             f"Voice command recognized "
             f"({self.current_voice_language}): {command}"
         )
+
+        # You spoke, so NEXUS answers aloud. This lasts for the session only; the Voice
+        # toggle in the header turns it off again and Settings is not changed.
+        if not self.voice_enabled:
+            self.set_voice_mode(True)
+            self.add_activity("Voice output turned on for this session because you used the microphone.")
 
         self.assistant_input.setPlainText(command)
         self.process_command(command)
@@ -3596,7 +3656,12 @@ class MainWindow(QMainWindow):
             self.add_activity(f"Voice output unavailable: {message}")
 
     def interrupt_voice_output(self):
-        """Stop active audio playback without pretending to cancel AI requests."""
+        """Cancel active listening, or stop audio playback (never pretends to cancel AI requests)."""
+        worker = getattr(self, "voice_worker", None)
+        if worker is not None and worker.isRunning() and hasattr(worker, "cancel") and worker.route(worker.engine) == "local":
+            worker.cancel()
+            self.add_activity("Listening cancelled.")
+            return True
         if not self.voice_output_active:
             return False
         try:
@@ -6162,6 +6227,15 @@ class MainWindow(QMainWindow):
                 card = getattr(self, card_name, None)
                 if card is not None and hasattr(card, "meter"):
                     card.meter.setFixedSize(size, size)
+
+        # Recalculate conversation item heights after the sidebar changes
+        # width, so wrapped titles receive enough vertical room.
+        if hasattr(self, "conversation_list"):
+            for index in range(self.conversation_list.count()):
+                item = self.conversation_list.item(index)
+                row = self.conversation_list.itemWidget(item)
+                if row is not None:
+                    item.setSizeHint(QSize(0, max(58, row.sizeHint().height() + 2)))
 
         central_widget = self.centralWidget()
         if central_widget is not None and self.system_check_overlay is not None:

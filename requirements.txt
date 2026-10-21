@@ -7,3 +7,4 @@ numpy>=2.0
 faster-whisper>=1.1
 websocket-client>=1.8
 google-genai>=1.0
+keyring>=25.0

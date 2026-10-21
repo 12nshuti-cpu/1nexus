@@ -258,14 +258,14 @@ class SettingsPage(QWidget):
         layout.addWidget(self._row(
             "Voice output",
             self.voice_enabled,
-            "Typed-response speech also requires the explicit legacy OpenAI TTS option below. Gemini Live voice responses use Gemini audio independently.",
+            "NEXUS reads its replies aloud (Kokoro or the Windows voice, see Speech output). Gemini Live voice turns use Gemini's own audio.",
         ))
 
         self.legacy_openai_voice = QCheckBox("Allow legacy OpenAI background voice and TTS")
         layout.addWidget(self._row(
             "Legacy voice services",
             self.legacy_openai_voice,
-            "Off by default. When enabled with an OpenAI key, background wake-word speech recognition and typed-response audio use OpenAI. The foreground microphone uses Gemini Live instead.",
+            "Off by default. When enabled with an OpenAI key, background wake-word listening and typed-response audio use OpenAI (cloud). Not needed for normal use.",
         ))
 
         self.voice_language = QComboBox()
@@ -293,6 +293,44 @@ class SettingsPage(QWidget):
             "Windows startup",
             self.startup_enabled,
             "NEXUS will register itself for the current Windows user. Windows security/UAC behavior is unchanged.",
+        ))
+        content_layout.addWidget(section)
+
+        # Speech input (local recognition)
+        section, layout = self._section(
+            "SPEECH INPUT",
+            "The microphone button records only when you press it. In Local mode (or Automatic without a Gemini key) "
+            "your speech is turned into text on this PC with Whisper; the audio is not saved or uploaded.",
+        )
+        self.microphone = QComboBox()
+        self.microphone.addItem("System default", None)
+        try:
+            from core.stt import list_input_devices
+
+            for index, name in list_input_devices():
+                self.microphone.addItem(f"{name} (#{index})", index)
+        except Exception:  # noqa: BLE001 - listing devices must never break Settings
+            pass
+        self.microphone.setMinimumWidth(260)
+        layout.addWidget(self._row("Microphone", self.microphone, "Pick a specific input device, or leave on the system default."))
+        self.stt_model = QComboBox()
+        for code, label in (
+            ("tiny", "Tiny - fastest, least accurate (~75 MB)"),
+            ("base", "Base - balanced, multilingual (~145 MB)"),
+            ("small", "Small - most accurate, slower (~480 MB)"),
+            ("tiny.en", "Tiny, English only"),
+            ("base.en", "Base, English only"),
+            ("small.en", "Small, English only"),
+        ):
+            self.stt_model.addItem(label, code)
+        self.stt_model.setMinimumWidth(260)
+        layout.addWidget(self._row("Recognition model", self.stt_model,
+                                   "Downloaded once on first use (internet needed that one time), then works offline."))
+        self.push_to_talk = QCheckBox("Push-to-talk")
+        layout.addWidget(self._row(
+            "Listening mode",
+            self.push_to_talk,
+            "Off: NEXUS stops listening when you pause. On: click the microphone to start and click again when you are done.",
         ))
         content_layout.addWidget(section)
 
@@ -439,6 +477,12 @@ class SettingsPage(QWidget):
         if voice_pick >= 0:
             self.kokoro_voice.setCurrentIndex(voice_pick)
         self.kokoro_speed.setValue(self.settings.kokoro_speed)
+        mic_pick = self.microphone.findData(self.settings.microphone_device)
+        self.microphone.setCurrentIndex(mic_pick if mic_pick >= 0 else 0)
+        model_pick = self.stt_model.findData(self.settings.stt_model)
+        if model_pick >= 0:
+            self.stt_model.setCurrentIndex(model_pick)
+        self.push_to_talk.setChecked(self.settings.push_to_talk)
         self.user_name.setText(str(self.settings.get("user_name", "") or ""))
         self.personalization.setChecked(self.settings.personalization_enabled)
         self.share_memory.setChecked(self.settings.share_memory_with_online)
@@ -516,6 +560,9 @@ class SettingsPage(QWidget):
         self.settings.tts_engine = self.tts_engine.currentData() or "auto"
         self.settings.kokoro_voice = self.kokoro_voice.currentData() or "af_heart"
         self.settings.kokoro_speed = self.kokoro_speed.value()
+        self.settings.microphone_device = self.microphone.currentData()
+        self.settings.stt_model = self.stt_model.currentData() or "base"
+        self.settings.push_to_talk = self.push_to_talk.isChecked()
         self.settings.set("user_name", self.user_name.text().strip()[:60])
         self.settings.personalization_enabled = self.personalization.isChecked()
         self.settings.share_memory_with_online = self.share_memory.isChecked()

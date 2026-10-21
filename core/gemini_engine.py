@@ -122,7 +122,8 @@ def _is_retryable(error: Exception) -> bool:
     return any(token in name for token in ("timeout", "connect", "network", "remoteprotocol", "readerror"))
 
 
-def _with_retries(call, *, sleep=time.sleep):
+def _with_retries(call, *, sleep=None):
+    sleep = sleep or time.sleep  # looked up at call time so tests can replace it
     last = None
     for attempt in range(MAX_ATTEMPTS):
         try:

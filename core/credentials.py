@@ -59,7 +59,7 @@ def _usable_keyring():
 def backend_description() -> str:
     store = _usable_keyring()
     if store is None:
-        return f"a protected file in {_data_dir()} (no system credential store available)"
+        return f"a plain-text file in {_data_dir()} (no system credential store available)"
     return "the system credential store (Windows Credential Manager on Windows)"
 
 

@@ -65,6 +65,7 @@ def clean_for_speech(text: str) -> str:
     value = _TAG_LINE.sub("", value)
     value = re.sub(r"```[\s\S]*?```", " ", value)
     value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"(?:https?://|www\.)\S+", "a link", value)  # never read a URL out character by character
     value = re.sub(r"^\s*\|.*\|\s*$", " ", value, flags=re.MULTILINE)  # tables are not speakable
     value = re.sub(r"#{1,6}\s*", "", value)
     value = re.sub(r"[*_~`]+", "", value)

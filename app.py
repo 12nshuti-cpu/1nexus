@@ -199,11 +199,46 @@ def _show_first_run_wizard(settings, log):
         QMessageBox.information(None, "NEXUS setup", "\n\n".join(warnings))
 
 
+def _selftest(log):
+    """Build the real UI without showing it, check bundled resources, then exit.
+
+    Used by scripts/build.ps1 to smoke-test the frozen app and by the test suite.
+    It touches no network, starts no background services and ignores the
+    single-instance lock, so it is safe to run while NEXUS is open.
+    Returns 0 on success, 1 on failure.
+    """
+    problems = []
+    for relative in ("assets/nexus.ico", "models/Modelfile", "core/kokoro_tts_worker.py"):
+        if not resource_path(relative).is_file():
+            problems.append(f"missing bundled resource: {relative}")
+    try:
+        app = QApplication.instance() or QApplication(sys.argv)
+        window = MainWindow()
+        window.show()
+        app.processEvents()
+        window.shutdown()
+        window.close()
+        app.processEvents()
+    except Exception as error:  # noqa: BLE001
+        log.exception("selftest: the main window failed to start")
+        problems.append(f"main window failed to start: {error}")
+    for problem in problems:
+        log.error("selftest: %s", problem)
+        print(f"SELFTEST FAILED: {problem}", file=sys.stderr)
+    if not problems:
+        log.info("selftest passed")
+        print("SELFTEST OK")
+    return 1 if problems else 0
+
+
 def main():
     log_path = configure_logging()
     install_exception_hooks()
     log = get_logger("app")
     log.info("%s %s starting (log: %s)", APP_NAME, APP_VERSION, log_path)
+
+    if "--selftest" in sys.argv:
+        return _selftest(log)
 
     # The resident hotkey helper launches NEXUS with --activate. If NEXUS is
     # already running, activate that instance instead of creating a second one.

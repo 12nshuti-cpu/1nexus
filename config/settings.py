@@ -195,6 +195,10 @@ class NEXUSSettings:
         "tts_engine": "auto",
         "kokoro_voice": "af_heart",
         "kokoro_speed": 1.0,
+        # Speech input (local faster-whisper)
+        "stt_model": "base",
+        "microphone_device": "",       # "" = the Windows default input device
+        "push_to_talk": False,         # False: stop when you stop talking; True: click again to stop
         # Window / startup behaviour (all opt-in or reversible)
         "startup_greeting": False,
         "close_to_tray": True,
@@ -439,6 +443,35 @@ class NEXUSSettings:
         except (TypeError, ValueError):
             number = 1.0
         self.set("kokoro_speed", max(0.5, min(2.0, number)))
+
+    # -- speech input -------------------------------------------------------
+    @property
+    def stt_model(self) -> str:
+        value = str(self.get("stt_model", "base") or "base").strip()
+        return value if value in {"tiny", "tiny.en", "base", "base.en", "small", "small.en"} else "base"
+
+    @stt_model.setter
+    def stt_model(self, value: str) -> None:
+        value = str(value or "base").strip()
+        self.set("stt_model", value if value in {"tiny", "tiny.en", "base", "base.en", "small", "small.en"} else "base")
+
+    @property
+    def microphone_device(self) -> int | None:
+        """Index of the chosen input device, or None for the system default."""
+        value = str(self.get("microphone_device", "") or "").strip()
+        return int(value) if value.isdigit() else None
+
+    @microphone_device.setter
+    def microphone_device(self, value) -> None:
+        self.set("microphone_device", "" if value in (None, "") else str(int(value)))
+
+    @property
+    def push_to_talk(self) -> bool:
+        return self.boolean("push_to_talk")
+
+    @push_to_talk.setter
+    def push_to_talk(self, value: bool) -> None:
+        self.set("push_to_talk", bool(value))
 
     # -- window / startup behaviour -------------------------------------------
     @property
