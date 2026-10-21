@@ -11,7 +11,7 @@ from PySide6.QtCore import QSettings
 APP_NAME = "NEXUS"
 APP_VERSION = "0.5.0"
 APP_PUBLISHER = "NEXUS"
-APP_URL = "https://github.com/emmynshuti1"
+APP_URL = "https://github.com/12nshuti-cpu/1nexus"
 
 # ------------------------------------------------------------
 # Paths
@@ -33,7 +33,19 @@ MODELS_DIR = RESOURCE_ROOT / "models"
 MODELFILE_PATH = MODELS_DIR / "Modelfile"
 ASSETS_DIR = RESOURCE_ROOT / "assets"
 
-USER_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NEXUS"
+def _user_data_dir() -> Path:
+    override = os.environ.get("NEXUS_DATA_DIR")
+    if override:
+        return Path(override)
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return Path(base) / "NEXUS"
+    if os.name == "nt":
+        return Path.home() / "AppData" / "Local" / "NEXUS"
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "NEXUS"
+
+
+USER_DATA_DIR = _user_data_dir()
 USER_CONFIG_DIR = USER_DATA_DIR / "config"
 USER_LOG_DIR = USER_DATA_DIR / "logs"
 USER_DB_DIR = USER_DATA_DIR / "data"
@@ -179,6 +191,16 @@ class NEXUSSettings:
         "speak_reminders": True,
         # Onboarding
         "first_run_completed": False,
+        # Speech output (Kokoro with a Windows-voice fallback)
+        "tts_engine": "auto",
+        "kokoro_voice": "af_heart",
+        "kokoro_speed": 1.0,
+        # Window / startup behaviour (all opt-in or reversible)
+        "startup_greeting": False,
+        "close_to_tray": True,
+        "start_minimized": False,
+        # Resident Ctrl+Alt+N helper process (keeps running after NEXUS exits), so opt-in.
+        "global_hotkey_enabled": False,
     }
 
     def __init__(self):
@@ -379,6 +401,77 @@ class NEXUSSettings:
     @first_run_completed.setter
     def first_run_completed(self, value: bool) -> None:
         self.set("first_run_completed", bool(value))
+
+    # -- speech output -----------------------------------------------------
+    @property
+    def tts_engine(self) -> str:
+        """auto = Kokoro, then the Windows voice if Kokoro is unavailable."""
+        value = str(self.get("tts_engine", "auto") or "auto").strip().lower()
+        return value if value in {"auto", "kokoro", "windows"} else "auto"
+
+    @tts_engine.setter
+    def tts_engine(self, value: str) -> None:
+        value = str(value or "auto").strip().lower()
+        self.set("tts_engine", value if value in {"auto", "kokoro", "windows"} else "auto")
+
+    @property
+    def kokoro_voice(self) -> str:
+        value = str(self.get("kokoro_voice", "af_heart") or "af_heart").strip()
+        return value if re.fullmatch(r"[a-z]{2}_[a-z0-9]{2,20}", value) else "af_heart"
+
+    @kokoro_voice.setter
+    def kokoro_voice(self, value: str) -> None:
+        value = str(value or "af_heart").strip()
+        self.set("kokoro_voice", value if re.fullmatch(r"[a-z]{2}_[a-z0-9]{2,20}", value) else "af_heart")
+
+    @property
+    def kokoro_speed(self) -> float:
+        try:
+            value = float(self.get("kokoro_speed", 1.0))
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(0.5, min(2.0, value))
+
+    @kokoro_speed.setter
+    def kokoro_speed(self, value: float) -> None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = 1.0
+        self.set("kokoro_speed", max(0.5, min(2.0, number)))
+
+    # -- window / startup behaviour -------------------------------------------
+    @property
+    def startup_greeting(self) -> bool:
+        return self.boolean("startup_greeting")
+
+    @startup_greeting.setter
+    def startup_greeting(self, value: bool) -> None:
+        self.set("startup_greeting", bool(value))
+
+    @property
+    def close_to_tray(self) -> bool:
+        return self.boolean("close_to_tray")
+
+    @close_to_tray.setter
+    def close_to_tray(self, value: bool) -> None:
+        self.set("close_to_tray", bool(value))
+
+    @property
+    def start_minimized(self) -> bool:
+        return self.boolean("start_minimized")
+
+    @start_minimized.setter
+    def start_minimized(self, value: bool) -> None:
+        self.set("start_minimized", bool(value))
+
+    @property
+    def global_hotkey_enabled(self) -> bool:
+        return self.boolean("global_hotkey_enabled")
+
+    @global_hotkey_enabled.setter
+    def global_hotkey_enabled(self, value: bool) -> None:
+        self.set("global_hotkey_enabled", bool(value))
 
     def reset(self) -> None:
         for key in self.DEFAULTS:

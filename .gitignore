@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Build output
+build/
+dist/
+installer_output/
+*.egg-info/
+
+# Secrets and user data - never commit
+.env
+*.key
+gemini_api_key.txt
+data/*.db
+data/*.db-wal
+data/*.db-shm
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+*.backup

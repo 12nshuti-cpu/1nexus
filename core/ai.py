@@ -31,6 +31,13 @@ from core.gemini_engine import GeminiUnavailable, generate_text, gemini_is_confi
 
 
 
+CAPABILITY_NOTE = """
+WHAT NEXUS CAN AND CANNOT DO (be accurate about this)
+- Reminders, saved memories, calculations, unit conversions and the date/time are handled by NEXUS itself when the user phrases the request directly, for example "remind me to call Sam in 10 minutes", "remember that my locker code is on the fridge", "what is 15% of 80".
+- You cannot create reminders, alarms, timers or memories yourself, and you must never say you did. If the user asks for one, tell them the exact phrasing to use (include a time for reminders).
+- You do not have the current date or time. If asked, tell the user to ask "what time is it".
+"""
+
 TOOL_PROTOCOL = r"""
 
 NEXUS WINDOWS TOOL
@@ -98,6 +105,8 @@ class AIService:
         self.session.trust_env = False
 
         self.system_prompt = settings.load_system_prompt()
+        # Optional callable(online: bool) -> str supplying user-approved memories.
+        self.memory_provider = None
 
         self.shell = ShellExecutor(self.settings)
 
@@ -925,9 +934,29 @@ class AIService:
 
 
 
+    def _memory_block(self, online: bool) -> str:
+        provider = getattr(self, "memory_provider", None)
+        if provider is None:
+            return ""
+        try:
+            return str(provider(online=online) or "").strip()
+        except Exception:  # noqa: BLE001 - personalisation must never break chat
+            return ""
+
+    def _online_system_prompt(self) -> str:
+        parts = [self.system_prompt.strip(), CAPABILITY_NOTE.strip()]
+        memory = self._memory_block(online=True)
+        if memory:
+            parts.append(memory)
+        return "\n\n".join(parts)
+
     def _build_system_prompt(self) -> str:
 
-        return f"{self.system_prompt.strip()}\n\n{TOOL_PROTOCOL.strip()}"
+        parts = [self.system_prompt.strip(), CAPABILITY_NOTE.strip(), TOOL_PROTOCOL.strip()]
+        memory = self._memory_block(online=False)
+        if memory:
+            parts.append(memory)
+        return "\n\n".join(parts)
 
 
 

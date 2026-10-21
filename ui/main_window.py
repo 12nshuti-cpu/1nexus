@@ -4,6 +4,7 @@ import os
 import platform
 import socket
 import subprocess
+import threading
 import time
 import shutil
 from pathlib import Path
@@ -19,6 +20,7 @@ from PySide6.QtCore import (
     QEvent,
     QThread,
     QTimer,
+    QObject,
     QProcess,
     Signal,
     QRectF,
@@ -1047,6 +1049,12 @@ class TerminalInput(QPlainTextEdit):
 # ============================================================
 
 
+class _SystemCheckBridge(QObject):
+    """Carries startup-check results from a worker thread to the UI thread."""
+
+    finished = Signal(list, str)
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
@@ -1235,6 +1243,8 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(0, self.start_system_check)
 
+        self.init_assistant_services()
+
     # ========================================================
     # NEXUS GLOBAL ACTIVATION
     # ========================================================
@@ -1282,15 +1292,122 @@ class MainWindow(QMainWindow):
                     item.setSizeHint(QSize(0, max(58, row.sizeHint().height() + 2)))
 
     def closeEvent(self, event):
-        # Keep the background assistant/tray alive when the user closes the UI.
-        # Window geometry is saved so the next activation returns to the same size.
         try:
             self.window_settings.setValue("windowGeometry", self.saveGeometry())
+        except Exception:  # noqa: BLE001
+            pass
+        tray = getattr(self, "tray", None)
+        if self.settings.close_to_tray and tray is not None and tray.isVisible() and not getattr(self, "_quitting", False):
+            # Keep reminders and the voice listener alive in the tray.
             event.ignore()
             self.hide()
-        except Exception:
-            event.accept()
+            if not self.window_settings.value("tray_hint_shown", False, type=bool):
+                self.window_settings.setValue("tray_hint_shown", True)
+                tray.showMessage("NEXUS is still running", "NEXUS keeps running in the system tray so reminders can notify you. "
+                                 "Right-click the tray icon and choose Exit to quit.")
+            return
+        self._quitting = True
+        event.accept()
+        QApplication.quit()
 
+    def set_tray(self, tray):
+        self.tray = tray
+
+    def request_quit(self):
+        self._quitting = True
+        QApplication.quit()
+
+    def shutdown(self):
+        """Stop timers, workers and audio before the process exits."""
+        self._quitting = True
+        for name in ("reminder_scheduler",):
+            service = getattr(self, name, None)
+            if service is not None:
+                try:
+                    service.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+        for name in ("monitor_timer", "speech_watch_timer", "thinking_timer", "global_clock_timer"):
+            timer = getattr(self, name, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+        if self.kokoro_speech_queue is not None:
+            try:
+                self.kokoro_speech_queue.close()
+            except Exception:  # noqa: BLE001
+                pass
+        for thread in list(self.ai_threads.values()):
+            try:
+                thread.quit()
+                thread.wait(1500)
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ========================================================
+    # ASSISTANT SERVICES: reminders, greeting, data window
+    # ========================================================
+
+    def init_assistant_services(self):
+        from core.reminders import ReminderScheduler
+
+        self.tray = getattr(self, "tray", None)
+        self.reminder_scheduler = ReminderScheduler(self.command_engine.assistant.reminders, parent=self)
+        self.reminder_scheduler.reminder_due.connect(self.handle_reminder_due)
+        # Start after the window exists so reminders missed while NEXUS was closed
+        # are announced once the UI is ready.
+        QTimer.singleShot(1500, self.reminder_scheduler.start)
+
+        self.speech_watch_timer = QTimer(self)
+        self.speech_watch_timer.setInterval(500)
+        self.speech_watch_timer.timeout.connect(self._poll_speech)
+        self.speech_watch_timer.start()
+
+        if self.settings.startup_greeting:
+            QTimer.singleShot(2500, self.show_startup_greeting)
+
+    def show_startup_greeting(self):
+        from core.assistant import build_greeting
+
+        name = str(self.settings.get("user_name", "") or "")
+        greeting = build_greeting(name)
+        self.add_activity(greeting)
+        try:
+            conversation_id = self.ensure_conversation()
+            self.conversation_manager.add_message(conversation_id, "assistant", greeting)
+            self.render_current_conversation()
+        except Exception:  # noqa: BLE001
+            pass
+        self.speak_response(greeting, self.current_voice_language)
+
+    def handle_reminder_due(self, reminder, missed):
+        """A reminder came due: notify, record it, and (optionally) speak it."""
+        text = f"Reminder: {reminder.get('message', '')}"
+        if missed:
+            text += f" (this was due at {str(reminder.get('due_at', ''))[11:16]} - NEXUS wasn't running or the PC was asleep)"
+        self.add_activity(text)
+        try:
+            conversation_id = self.ensure_conversation()
+            self.conversation_manager.add_message(conversation_id, "assistant", f"\u23f0 {text}")
+            self.render_current_conversation()
+        except Exception:  # noqa: BLE001
+            pass
+        if self.settings.reminder_notifications:
+            tray = getattr(self, "tray", None)
+            if tray is not None and tray.isVisible():
+                tray.showMessage("NEXUS reminder", text)
+            if not self.isVisible():
+                self.activate_nexus()
+        if self.settings.speak_reminders and self.voice_enabled:
+            self.speak_response(text, self.current_voice_language)
+
+    def open_data_dialog(self):
+        from ui.data_dialog import DataDialog
+
+        dialog = DataDialog(self.command_engine.assistant, self.settings, self)
+        dialog.exec()
 
     # ========================================================
     # MAIN UI
@@ -1331,6 +1448,7 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage(self.settings, self)
         self.settings_page.settingsSaved.connect(self.apply_runtime_settings)
         self.settings_page.resetRequested.connect(self.apply_reset_preferences)
+        self.settings_page.manageDataRequested.connect(self.open_data_dialog)
 
         self.page_stack.addWidget(self.dashboard_page)
         self.tool_dialogs = {}
@@ -1837,11 +1955,29 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(80, self._run_system_check)
 
     def _run_system_check(self):
-        try:
-            results = NEXUSSystemChecker().run_all_checks()
-            self.system_check_overlay.set_results(results)
-        except Exception as error:
-            self.system_check_overlay.set_results([])
+        """Run the checks on a worker thread (they make network calls); results return via a signal."""
+        if self.system_check_overlay is None or getattr(self, "_system_check_running", False):
+            return
+        self._system_check_running = True
+        self.system_check_overlay.update_status("Running startup diagnostics…")
+        if not hasattr(self, "_system_check_bridge"):
+            self._system_check_bridge = _SystemCheckBridge(self)
+            self._system_check_bridge.finished.connect(self._system_check_done)
+
+        def work():
+            try:
+                self._system_check_bridge.finished.emit(NEXUSSystemChecker().run_all_checks(), "")
+            except Exception as error:  # noqa: BLE001
+                self._system_check_bridge.finished.emit([], str(error))
+
+        threading.Thread(target=work, name="NEXUS-SystemCheck", daemon=True).start()
+
+    def _system_check_done(self, results, error):
+        self._system_check_running = False
+        if self.system_check_overlay is None:
+            return
+        self.system_check_overlay.set_results(results)
+        if error:
             self.system_check_overlay.update_status(f"System check could not complete: {error}")
 
     def _attempt_system_fix(self, index):
@@ -1860,24 +1996,19 @@ class MainWindow(QMainWindow):
                 self.system_check_overlay.set_busy(True)
                 self.system_check_overlay.update_status("NEXUS is creating the customized local model…")
                 modelfile = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "Modelfile")
-                self.system_fix_process = QProcess(self)
-                self.system_fix_process.finished.connect(self._system_fix_finished)
-                self.system_fix_process.start("ollama", ["create", "nexus", "-f", modelfile])
+                self._new_fix_process(self._system_fix_finished).start("ollama", ["create", "nexus", "-f", modelfile])
                 return
 
             if "ollama" in text and "llama3.1:8b" in text and "model" in text:
                 self.system_check_overlay.set_busy(True)
                 self.system_check_overlay.update_status("NEXUS is preparing the local AI model…")
-                self.system_fix_process = QProcess(self)
-                self.system_fix_process.finished.connect(self._system_fix_finished)
-                self.system_fix_process.start("ollama", ["pull", "llama3.1:8b"])
+                self._new_fix_process(self._system_fix_finished).start("ollama", ["pull", "llama3.1:8b"])
                 return
 
             if "ollama" in text:
                 self.system_check_overlay.set_busy(True)
                 self.system_check_overlay.update_status("NEXUS is starting the local AI service…")
-                self.system_fix_process = QProcess(self)
-                self.system_fix_process.start("ollama", ["serve"])
+                self._new_fix_process().start("ollama", ["serve"])
                 QTimer.singleShot(2500, self._system_fix_service_check)
                 return
 
@@ -1907,6 +2038,27 @@ class MainWindow(QMainWindow):
             self.system_check_overlay.update_status("Rechecking system requirements…")
         QTimer.singleShot(250, self._run_system_check)
 
+    def _system_fix_failed(self, error):
+        """The helper program could not even be started (for example Ollama is not installed)."""
+        self.system_fix_process = None
+        if self.system_check_overlay is not None:
+            self.system_check_overlay.set_busy(False)
+            self.system_check_overlay.update_status(
+                "NEXUS could not start 'ollama'. Install Ollama from https://ollama.com/download, "
+                "then choose Retry - or switch to Online AI in Settings."
+            )
+
+    def _new_fix_process(self, finished=None):
+        process = QProcess(self)
+        if finished is not None:
+            process.finished.connect(finished)
+        process.errorOccurred.connect(
+            lambda error, p=process: self._system_fix_failed(error)
+            if error == QProcess.ProcessError.FailedToStart else None
+        )
+        self.system_fix_process = process
+        return process
+
     def _system_fix_service_check(self):
         if self.system_check_overlay is not None:
             self.system_check_overlay.set_busy(False)
@@ -1917,13 +2069,8 @@ class MainWindow(QMainWindow):
         if self.system_check_overlay is None:
             return
 
-        results = list(getattr(self.system_check_overlay, "results", []) or [])
-        if not results or not all(getattr(result, "success", False) for result in results):
-            self.system_check_overlay.update_status(
-                "Complete every required component before continuing to NEXUS."
-            )
-            return
-
+        # Missing components never lock the user out of the app; the dialog has
+        # already told them what is missing and Settings can fix it later.
         self.system_check_overlay.hide()
         self.system_check_overlay.deleteLater()
         self.system_check_overlay = None
@@ -2694,6 +2841,10 @@ class MainWindow(QMainWindow):
             widget = item.widget()
             child_layout = item.layout()
             if widget is not None:
+                # Hide and detach immediately: deleteLater() alone leaves the old
+                # widget painted at its previous position until the event loop runs.
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
             elif child_layout is not None:
                 self._clear_layout(child_layout)
@@ -3174,83 +3325,6 @@ class MainWindow(QMainWindow):
         else:
             self.add_activity("Nexus voice output disabled.")
 
-    def speak_response(self, response, language=None):
-        """Speak a NEXUS response using the online AI voice when Voice mode is enabled."""
-
-        if not response:
-            return
-
-        if not hasattr(self, "voice_toggle"):
-            return
-
-        if not self.voice_toggle.isChecked():
-            return
-
-        # Do not start another speech operation while
-        # the current one is still speaking.
-        if (
-            self.voice_speech_thread is not None
-            and self.voice_speech_thread.isRunning()
-        ):
-            return
-
-        self.voice_speech_thread = QThread(self)
-
-        self.voice_speech_worker = VoiceSpeakWorker(
-            response,
-            language or self.current_voice_language or self.get_selected_voice_language(),
-        )
-
-        self.voice_speech_worker.moveToThread(self.voice_speech_thread)
-
-        self.voice_speech_thread.started.connect(self.voice_speech_worker.run)
-
-        self.voice_speech_worker.started.connect(self.handle_voice_speech_started)
-
-        self.voice_speech_worker.finished.connect(self.handle_voice_speech_finished)
-
-        self.voice_speech_worker.error.connect(self.handle_voice_speech_error)
-
-        self.voice_speech_worker.finished.connect(self.voice_speech_thread.quit)
-
-        self.voice_speech_worker.error.connect(self.voice_speech_thread.quit)
-
-        self.voice_speech_thread.finished.connect(self.voice_speech_worker.deleteLater)
-
-        self.voice_speech_thread.finished.connect(self.cleanup_voice_speech)
-
-        self.voice_speech_thread.start()
-
-    def handle_voice_speech_started(self):
-        """
-        Update the Nexus activity feed when speech begins.
-        """
-
-        self.add_activity("Nexus voice output started.")
-
-    def handle_voice_speech_finished(self):
-        """
-        Called when NEXUS finishes speaking.
-        """
-
-        self.add_activity("Nexus voice output completed.")
-
-    def handle_voice_speech_error(self, message):
-        """
-        Handle online TTS errors without crashing NEXUS.
-        """
-
-        self.add_activity(f"Voice output unavailable: {message}")
-
-    def cleanup_voice_speech(self):
-        """
-        Release the finished speech thread and worker.
-        """
-
-        self.voice_speech_worker = None
-        self.voice_speech_thread = None
-
-
     def capture_voice_command(self):
         if hasattr(self, "voice_worker") and self.voice_worker.isRunning():
             return
@@ -3418,16 +3492,52 @@ class MainWindow(QMainWindow):
             f"Voice input unavailable: {message}"
         )
 
+    def _ensure_speech_manager(self):
+        """Shared local speech engine: Kokoro, with the Windows voice as fallback."""
+        if self.kokoro_speech_queue is None:
+            from core.voice import KokoroSpeechQueue, VoiceService
+
+            self.kokoro_speech_queue = KokoroSpeechQueue(self.settings)
+            VoiceService._active_kokoro_queue = self.kokoro_speech_queue
+        return self.kokoro_speech_queue
+
     def speak_response(self, response, language=None):  # noqa: F811
-        if not response:
+        """Speak a response with the configured local engine (Kokoro / Windows voice)."""
+        if not response or not self.voice_enabled:
             return
 
-        if not self.voice_enabled:
+        if self.settings.legacy_openai_voice_enabled:
+            self._speak_response_legacy_openai(response, language)
             return
 
-        if not self.settings.legacy_openai_voice_enabled:
-            self.add_activity("Legacy OpenAI speech is off. Enable it explicitly in Settings, or use the Gemini Live microphone experience.")
+        manager = self._ensure_speech_manager()
+        if manager.enqueue(response, language or self.current_voice_language or "auto"):
+            self.voice_output_active = True
+            self.set_core_state("speaking")
+            if hasattr(self, "assistant_status"):
+                self.assistant_status.setText("● SPEAKING")
+        else:
+            self.add_activity(f"Voice output unavailable: {manager.last_error}")
+
+    def _poll_speech(self):
+        """Report engine changes/failures and detect when speech has finished."""
+        manager = self.kokoro_speech_queue
+        if manager is None:
             return
+        notice = manager.pop_notice()
+        while notice:
+            self.add_activity(notice)
+            notice = manager.pop_notice()
+        if self.voice_output_active and not manager.busy:
+            if not (self.voice_speech_thread is not None and self.voice_speech_thread.isRunning()):
+                self.voice_output_active = False
+                self.set_core_idle_state(voice_output_finished=True)
+                if hasattr(self, "assistant_status") and self.pending_ai_requests == 0:
+                    self.assistant_status.setText("● READY")
+                if manager.last_error and not manager.last_engine:
+                    self.add_activity(f"Voice output unavailable: {manager.last_error}")
+
+    def _speak_response_legacy_openai(self, response, language=None):
 
         if (
             self.voice_speech_thread is not None
@@ -5617,32 +5727,23 @@ class MainWindow(QMainWindow):
             self.render_current_conversation()
 
     def handle_ai_speech_chunk(self, conversation_id, text, language="auto"):
-        """Queue a completed phrase for local Kokoro while Ollama keeps generating."""
-        if not text or not self.voice_enabled:
+        """Queue a completed phrase for speech while the local model keeps generating."""
+        if not text or not self.voice_enabled or self.settings.legacy_openai_voice_enabled:
             return
         try:
-            from core.voice import KokoroSpeechQueue, VoiceService
-            text = VoiceService._clean_for_speech(text)
-            if not text:
-                return
-            if self.kokoro_speech_queue is None:
-                self.kokoro_speech_queue = KokoroSpeechQueue()
-                VoiceService._active_kokoro_queue = self.kokoro_speech_queue
-            if self.kokoro_speech_queue.enqueue(text, language):
+            manager = self._ensure_speech_manager()
+            if manager.enqueue(text, language):
                 self.kokoro_streamed_conversations.add(conversation_id)
                 self.voice_output_active = True
                 if hasattr(self, "assistant_status"):
                     self.assistant_status.setText("● SPEAKING")
             elif not self._kokoro_unavailable_notified:
                 self._kokoro_unavailable_notified = True
-                self.add_activity(
-                    "Kokoro speech is unavailable: "
-                    + (self.kokoro_speech_queue.last_error or "check the .venv-kokoro environment.")
-                )
+                self.add_activity("Voice output unavailable: " + (manager.last_error or "no speech engine found."))
         except Exception as error:  # noqa: BLE001
             if not self._kokoro_unavailable_notified:
                 self._kokoro_unavailable_notified = True
-                self.add_activity(f"Kokoro speech could not start: {error}")
+                self.add_activity(f"Speech could not start: {error}")
 
     def handle_ai_response(
         self,

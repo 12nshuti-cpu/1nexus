@@ -15,9 +15,12 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
+from config.settings import APP_NAME, APP_VERSION, NEXUSSettings
 from core.background_voice import NexusBackgroundVoice
 from core.dependency_manager import NexusDependencyManager
+from core.logger import configure_logging, get_logger, install_exception_hooks
 from ui.main_window import MainWindow
+from ui.styles import DARK_THEME
 
 
 def resource_path(relative_path):
@@ -182,7 +185,26 @@ def _start_hotkey_helper():
         except Exception:
             pass
 
+def _show_first_run_wizard(settings, log):
+    """Run the first-run wizard once. Returns after the user finishes or skips."""
+    from ui.first_run_wizard import FirstRunWizard
+
+    wizard = FirstRunWizard(settings)
+    wizard.setStyleSheet(DARK_THEME)
+    wizard.exec()
+    warnings = getattr(wizard, "last_warnings", [])
+    for line in warnings:
+        log.warning("first-run: %s", line)
+    if warnings:
+        QMessageBox.information(None, "NEXUS setup", "\n\n".join(warnings))
+
+
 def main():
+    log_path = configure_logging()
+    install_exception_hooks()
+    log = get_logger("app")
+    log.info("%s %s starting (log: %s)", APP_NAME, APP_VERSION, log_path)
+
     # The resident hotkey helper launches NEXUS with --activate. If NEXUS is
     # already running, activate that instance instead of creating a second one.
     activate_requested = "--activate" in sys.argv
@@ -190,120 +212,101 @@ def main():
     mutex, is_first_instance = _single_instance()
     if not is_first_instance:
         if activate_requested and _activate_existing_nexus():
-            print("[0] Existing NEXUS instance activated.")
+            log.info("Existing NEXUS instance activated.")
         else:
-            print("[0] NEXUS is already running.")
+            log.info("NEXUS is already running.")
         return 0
 
     background_mode = "--background" in sys.argv
     setup_only = "--setup-dependencies" in sys.argv
 
-    print("[1] Creating QApplication")
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     app.setQuitOnLastWindowClosed(False)
-
-    print("[2] Setting application font")
     app.setFont(QFont("Segoe UI", 10))
 
-    print("[3] Loading icon")
-    icon_path = resource_path("assets/nexus.ico")
-    nexus_icon = QIcon(str(icon_path))
+    nexus_icon = QIcon(str(resource_path("assets/nexus.ico")))
     app.setWindowIcon(nexus_icon)
 
-    print("[3a] Starting resident NEXUS hotkey helper")
-    _start_hotkey_helper()
+    settings = NEXUSSettings()
 
     # ---------------------------------------------------------
-    # Automatic dependency preparation
+    # First-run setup (interactive launches only)
     # ---------------------------------------------------------
-    print("[4] Checking Ollama and llama3.1:8b")
-    dependencies_ok, dependency_detail = _prepare_dependencies(
-        app,
-        show_dialog=not background_mode,
-    )
+    if not background_mode and not setup_only and not settings.first_run_completed:
+        _show_first_run_wizard(settings, log)
+
+    # ---------------------------------------------------------
+    # Optional resident Ctrl+Alt+N helper (opt-in)
+    # ---------------------------------------------------------
+    if settings.global_hotkey_enabled:
+        _start_hotkey_helper()
+
+    # ---------------------------------------------------------
+    # Local AI preparation: only when local AI can be used
+    # ---------------------------------------------------------
+    dependencies_ok, dependency_detail = True, ""
+    if settings.ai_engine != "online" or setup_only:
+        dependencies_ok, dependency_detail = _prepare_dependencies(app, show_dialog=not background_mode)
+        log.info("local AI preparation: ok=%s detail=%s", dependencies_ok, dependency_detail)
 
     if setup_only:
-        if dependencies_ok:
-            print(f"[4a] {dependency_detail}")
-            return 0
+        print(dependency_detail)
+        return 0 if dependencies_ok else 1
 
-        print(f"[4a] Dependency setup failed: {dependency_detail}")
-        return 1
-
-    if not dependencies_ok:
-        QMessageBox.warning(
-            None,
-            "NEXUS requirements",
-            "NEXUS could not finish preparing Ollama and the local AI model.\n\n"
-            f"{dependency_detail}\n\n"
-            "NEXUS will still start so you can review the system check.",
-        )
-
-    print("[5] Creating MainWindow")
     window = MainWindow()
-
-    print("[6] Setting MainWindow icon")
     window.setWindowIcon(nexus_icon)
 
     # ---------------------------------------------------------
-    # Background voice assistant
+    # Legacy background voice (explicit opt-in only; see Settings)
     # ---------------------------------------------------------
-    print("[8] Starting NEXUS background voice listener")
     background_voice = NexusBackgroundVoice(
         command_engine=window.command_engine,
         on_activate=window.activate_nexus,
-        on_status=lambda message: print(f"[VOICE] {message}"),
+        on_status=lambda message: log.info("voice: %s", message),
     )
     window.set_background_voice(background_voice)
-    background_voice.start()
+    background_voice.start()  # does nothing unless the user enabled the legacy option
     app.aboutToQuit.connect(background_voice.stop)
 
     # ---------------------------------------------------------
-    # System tray
+    # System tray (reminders keep notifying while the window is closed)
     # ---------------------------------------------------------
-    tray = QSystemTrayIcon(nexus_icon, parent=app)
-    tray.setToolTip("NEXUS — Personal Digital Command Center")
+    tray = None
+    if QSystemTrayIcon.isSystemTrayAvailable():
+        tray = QSystemTrayIcon(nexus_icon, parent=app)
+        tray.setToolTip("NEXUS - personal desktop assistant")
+        tray_menu = QMenu()
+        tray_menu.addAction("Open NEXUS").triggered.connect(window.activate_nexus)
+        tray_menu.addSeparator()
+        tray_menu.addAction("Exit NEXUS").triggered.connect(window.request_quit)
+        tray.setContextMenu(tray_menu)
+        tray.activated.connect(
+            lambda reason: window.activate_nexus()
+            if reason == QSystemTrayIcon.ActivationReason.Trigger
+            else None
+        )
+        tray.show()
+        app.aboutToQuit.connect(tray.hide)
+    else:
+        log.warning("No system tray is available; closing the window will exit NEXUS.")
+    window.set_tray(tray)
+    app.aboutToQuit.connect(window.shutdown)
 
-    tray_menu = QMenu()
-    show_action = tray_menu.addAction("Open NEXUS")
-    show_action.triggered.connect(window.activate_nexus)
-
-    tray_menu.addSeparator()
-    exit_action = tray_menu.addAction("Exit NEXUS")
-    exit_action.triggered.connect(app.quit)
-
-    tray.setContextMenu(tray_menu)
-    tray.activated.connect(
-        lambda reason: window.activate_nexus()
-        if reason == QSystemTrayIcon.ActivationReason.Trigger
-        else None
-    )
-    tray.show()
-    app.aboutToQuit.connect(tray.hide)
-
-    if background_mode and not activate_requested:
-        print("[9] Background mode enabled — NEXUS UI is hidden.")
+    hide_to_tray = tray is not None and tray.isVisible() and (background_mode or settings.start_minimized)
+    if hide_to_tray and not activate_requested:
+        log.info("Starting hidden in the system tray.")
         window.hide()
     else:
-        print("[9] Showing MainWindow")
         window.show()
         if activate_requested:
             QTimer.singleShot(80, window.activate_nexus)
 
-    threading.Thread(
-        target=_warm_up_ai,
-        args=(window,),
-        name="NEXUS-Ollama-Warmup",
-        daemon=True,
-    ).start()
-
-    print("[10] NEXUS ready — Ctrl+Alt+N helper, local wake detector, and voice control are enabled.")
-    print("[11] Starting Qt event loop")
+    log.info("NEXUS ready.")
     exit_code = app.exec()
-
-    # Keep the mutex alive until the Qt process exits.
-    _ = mutex
-    print("[12] Qt event loop exited")
+    _ = mutex  # keep the single-instance mutex alive until the Qt loop ends
+    log.info("NEXUS exited with code %s", exit_code)
     return exit_code
 
 

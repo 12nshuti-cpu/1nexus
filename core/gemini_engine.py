@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 
 from config import settings
@@ -70,11 +71,7 @@ def redact_secrets(value: str) -> str:
 
 def _safe_error(error: Exception) -> GeminiUnavailable:
     """Return actionable provider errors without propagating headers or secrets."""
-    status = getattr(error, "code", None) or getattr(error, "status_code", None)
-    try:
-        status = int(status)
-    except (TypeError, ValueError):
-        status = None
+    status = _status_of(error)
     if status in (401, 403):
         detail = "Gemini rejected the API key or project access. Check the key and enabled API."
     elif status == 429:
@@ -86,14 +83,58 @@ def _safe_error(error: Exception) -> GeminiUnavailable:
     return GeminiUnavailable(detail)
 
 
+REQUEST_TIMEOUT_SECONDS = 30
+MAX_ATTEMPTS = 3            # 1 try + 2 retries, never more
+_RETRY_DELAYS = (1.0, 2.5)  # seconds between attempts
+
+
 def _client(api_key):
     try:
         from google import genai
+        from google.genai import types
     except ImportError as error:
         raise GeminiUnavailable(
             "Gemini support is not installed. Install the google-genai dependency from requirements.txt."
         ) from error
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_SECONDS * 1000),
+    )
+
+
+def _status_of(error: Exception):
+    status = getattr(error, "code", None) or getattr(error, "status_code", None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_retryable(error: Exception) -> bool:
+    """Retry only transient failures: rate limits, server errors, network blips.
+
+    Authentication/permission/bad-request errors are never retried.
+    """
+    status = _status_of(error)
+    if status is not None:
+        return status == 429 or status >= 500
+    name = type(error).__name__.lower()
+    return any(token in name for token in ("timeout", "connect", "network", "remoteprotocol", "readerror"))
+
+
+def _with_retries(call, *, sleep=time.sleep):
+    last = None
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            return call()
+        except GeminiUnavailable:
+            raise
+        except Exception as error:  # noqa: BLE001 - provider SDK exceptions vary
+            last = error
+            if attempt + 1 >= MAX_ATTEMPTS or not _is_retryable(error):
+                break
+            sleep(_RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)])
+    raise last  # type: ignore[misc]
 
 
 def generate_text(message: str, conversation, system_instruction: str, model: str):
@@ -101,8 +142,7 @@ def generate_text(message: str, conversation, system_instruction: str, model: st
     key = get_gemini_api_key()
     if not key:
         raise GeminiUnavailable(
-            "Gemini Online mode needs a key. Set GEMINI_API_KEY or save it to "
-            "%LOCALAPPDATA%\\NEXUS\\gemini_api_key.txt."
+            "Gemini Online mode needs an API key. Add it in Settings, or set the GEMINI_API_KEY environment variable."
         )
 
     try:
@@ -121,18 +161,25 @@ def generate_text(message: str, conversation, system_instruction: str, model: st
             role="user",
             parts=[types.Part(text=redact_secrets(message))],
         ))
-        response = client.models.generate_content(
-            model=model or settings.GEMINI_TEXT_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=(
-                    redact_secrets(system_instruction)
-                    + "\n\nThis request is being processed online by Google Gemini through the NEXUS app. "
-                    "You do not have access to the user's PC, local files, or NEXUS Windows tools unless their results are explicitly included."
-                ),
+        config = types.GenerateContentConfig(
+            system_instruction=(
+                redact_secrets(system_instruction)
+                + "\n\nThis request is being processed online by Google Gemini through the NEXUS app. "
+                "You do not have access to the user's PC, local files, or NEXUS Windows tools unless their results are explicitly included."
             ),
         )
-        answer = redact_secrets(str(response.text or "")).strip()
+        response = _with_retries(
+            lambda: client.models.generate_content(
+                model=model or settings.GEMINI_TEXT_MODEL,
+                contents=contents,
+                config=config,
+            )
+        )
+        try:
+            raw_text = response.text
+        except Exception:  # noqa: BLE001 - blocked/malformed responses raise on .text
+            raw_text = ""
+        answer = redact_secrets(str(raw_text or "")).strip()
         if not answer:
             raise GeminiUnavailable("Gemini returned an empty response.")
         return answer

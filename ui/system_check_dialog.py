@@ -85,7 +85,7 @@ class SystemCheckDialog(QFrame):
         card_layout.addWidget(scroll, 1)
 
         bottom = QHBoxLayout()
-        self.hint = QLabel("Required checks must pass. Optional device checks can be completed later.")
+        self.hint = QLabel("Missing items can be fixed later from Settings; NEXUS never blocks you from starting.")
         self.hint.setObjectName("systemHint")
         self.hint.setWordWrap(True)
         bottom.addWidget(self.hint, 1)
@@ -184,16 +184,14 @@ class SystemCheckDialog(QFrame):
                 f"{required_failures} required component(s) need attention before NEXUS can continue."
             )
 
-        self.continue_button.setEnabled(required_failures == 0)
+        # Never lock the user out: with a missing requirement they can still
+        # use reminders, memory and tools, and fix the problem from Settings.
+        self.continue_button.setEnabled(True)
+        self.continue_button.setText("Continue anyway  ›" if required_failures else "Continue to NEXUS  ›")
         self.retry_button.setVisible(required_failures > 0)
 
     def _request_continue(self):
-        if all(
-            bool(getattr(result, "success", False))
-            for result in self.results
-            if self._is_required(result)
-        ):
-            self.continueRequested.emit()
+        self.continueRequested.emit()
 
     @staticmethod
     def _action_for_result(result):
@@ -209,12 +207,7 @@ class SystemCheckDialog(QFrame):
         return cls._action_for_result(result)[0] == "fix"
 
     def set_busy(self, busy):
-        required_ready = bool(self.results) and all(
-            bool(getattr(result, "success", False))
-            for result in self.results
-            if self._is_required(result)
-        )
-        self.continue_button.setEnabled(not busy and required_ready)
+        self.continue_button.setEnabled(not busy and bool(self.results))
         self.retry_button.setEnabled(not busy)
         for button in self.findChildren(QPushButton, "systemFix"):
             button.setEnabled(not busy)

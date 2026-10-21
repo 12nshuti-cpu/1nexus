@@ -1,3 +1,5 @@
+from pathlib import Path
+import os
 import psutil
 import time
 
@@ -16,7 +18,7 @@ class SystemMonitor:
 
     @staticmethod
     def get_disk_usage():
-        disk = psutil.disk_usage("c:\\")
+        disk = psutil.disk_usage(Path.home().anchor or os.sep)
         return disk.percent
 
     @staticmethod

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import os
 
 import requests
+
+from config import settings as app_settings
+from config.settings import NEXUSSettings
 
 
 @dataclass(slots=True)
@@ -16,18 +18,51 @@ class CheckResult:
 
 
 class NEXUSSystemChecker:
-    """Startup checks for the current NEXUS architecture.
+    """Startup checks that follow the user's chosen AI mode.
 
-    Voice checks intentionally use the current online STT/TTS stack and the
-    local Faster-Whisper wake detector. There is no Vosk dependency here.
+    * **Local** - Ollama and the configured model are required.
+    * **Online** - a Gemini API key is required; Ollama is optional.
+    * **Automatic** - at least one AI backend must be usable. Ollama is required
+      only when no Gemini key is configured.
+
+    Microphone, speech output and similar checks are always optional, and a
+    failing check never permanently blocks the application (see the dialog).
     """
 
-    OLLAMA_URL = "http://127.0.0.1:11434"
-    REQUIRED_MODEL = "llama3.1:8b"
-    NEXUS_MODEL = "nexus:latest"
+    BASE_MODEL = app_settings.BASE_MODEL
 
-    def __init__(self):
-        self.base_dir = Path(__file__).resolve().parent.parent
+    def __init__(self, settings: NEXUSSettings | None = None, http_get=None):
+        self.base_dir = Path(app_settings.RESOURCE_ROOT)
+        self.settings = settings or NEXUSSettings()
+        self._get = http_get or requests.get
+
+    # ------------------------------------------------------------------ helpers
+    @property
+    def ollama_url(self) -> str:
+        return app_settings.OLLAMA_BASE_URL
+
+    @staticmethod
+    def _gemini_ready() -> bool:
+        try:
+            from core.gemini_engine import gemini_is_configured
+
+            return bool(gemini_is_configured())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def local_required(self) -> bool:
+        engine = self.settings.ai_engine
+        if engine == "local":
+            return True
+        if engine == "automatic":
+            return not self._gemini_ready()
+        return False
+
+    def online_required(self) -> bool:
+        return self.settings.ai_engine == "online"
+
+    def _configured_model(self) -> str:
+        return (self.settings.ai_model or app_settings.NEXUS_MODEL).strip()
 
     def run_all_checks(self):
         return [
@@ -35,125 +70,133 @@ class NEXUSSystemChecker:
             self.check_ollama(),
             self.check_ollama_model(),
             self.check_nexus_model(),
+            self.check_online_ai(),
+            self.check_speech_output(),
             self.check_microphone(),
-            self.check_online_voice(),
-            self.check_wake_detector(),
             self.check_database(),
         ]
 
+    # ------------------------------------------------------------------- checks
     def check_application(self):
         try:
             if not self.base_dir.exists():
                 return CheckResult("NEXUS application", False, "Application directory was not found.")
             return CheckResult("NEXUS application", True, "Application files are available.")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             return CheckResult("NEXUS application", False, str(error))
 
     def check_ollama(self):
+        required = self.local_required()
+        hint = "" if required else " Local AI is optional with your current settings."
         try:
-            response = requests.get(self.OLLAMA_URL, timeout=2.0)
+            response = self._get(self.ollama_url, timeout=2.0)
             if response.ok:
-                return CheckResult("Ollama", True, "Ollama is running.")
-            return CheckResult("Ollama", False, f"Ollama responded with HTTP {response.status_code}.")
+                return CheckResult("Ollama", True, "Ollama is running.", required)
+            return CheckResult("Ollama", False, f"Ollama responded with HTTP {response.status_code}.{hint}", required)
         except requests.exceptions.ConnectionError:
-            return CheckResult("Ollama", False, "Ollama is not running or is not installed.")
+            return CheckResult("Ollama", False, "Ollama is not running or is not installed." + hint, required)
         except requests.exceptions.Timeout:
-            return CheckResult("Ollama", False, "Ollama did not respond in time.")
-        except Exception as error:
-            return CheckResult("Ollama", False, str(error))
+            return CheckResult("Ollama", False, "Ollama did not respond in time." + hint, required)
+        except Exception as error:  # noqa: BLE001
+            return CheckResult("Ollama", False, f"{error}{hint}", required)
 
     def _ollama_models(self):
-        response = requests.get(f"{self.OLLAMA_URL}/api/tags", timeout=4.0)
+        response = self._get(f"{self.ollama_url}/api/tags", timeout=4.0)
         response.raise_for_status()
         payload = response.json()
         return [str(item.get("name", "")).strip() for item in payload.get("models", [])]
 
+    @staticmethod
+    def _has_model(names, wanted: str) -> bool:
+        wanted = wanted.lower()
+        names = {name.lower() for name in names}
+        return wanted in names or f"{wanted}:latest" in names or any(n.startswith(wanted + ":") for n in names)
+
     def check_ollama_model(self):
+        required = self.local_required()
         try:
-            names = {name.lower() for name in self._ollama_models()}
-            wanted = self.REQUIRED_MODEL.lower()
-            if wanted in names or any(name.startswith(wanted + ":") for name in names):
-                return CheckResult(self.REQUIRED_MODEL, True, "Required Ollama base model is available.")
-            return CheckResult(self.REQUIRED_MODEL, False, "The required Ollama base model was not found.")
-        except Exception as error:
-            return CheckResult(self.REQUIRED_MODEL, False, f"Could not verify the Ollama model: {error}")
+            if self._has_model(self._ollama_models(), self.BASE_MODEL):
+                return CheckResult(self.BASE_MODEL, True, "Base Ollama model is available.", required)
+            return CheckResult(
+                self.BASE_MODEL, False,
+                f"The base Ollama model was not found. Install it with: ollama pull {self.BASE_MODEL}", required,
+            )
+        except requests.exceptions.RequestException:
+            return CheckResult(self.BASE_MODEL, False, "Could not be checked because Ollama is not reachable.", required)
+        except Exception as error:  # noqa: BLE001
+            return CheckResult(self.BASE_MODEL, False, f"Could not verify the Ollama model: {error}", required)
 
     def check_nexus_model(self):
+        required = self.local_required()
+        wanted = self._configured_model()
         try:
-            names = {name.lower() for name in self._ollama_models()}
-            if self.NEXUS_MODEL.lower() in names:
-                return CheckResult("NEXUS local model", True, "The customized NEXUS Ollama model is available.")
+            names = self._ollama_models()
+            if self._has_model(names, wanted):
+                return CheckResult("NEXUS local model", True, f"The configured model '{wanted}' is available.", required)
             modelfile = self.base_dir / "models" / "Modelfile"
-            if modelfile.is_file():
+            if wanted == app_settings.NEXUS_MODEL and modelfile.is_file():
                 return CheckResult(
-                    "NEXUS local model",
-                    False,
-                    "models/Modelfile is present, but the customized 'nexus' model has not been created yet.",
+                    "NEXUS local model", False,
+                    "models/Modelfile is present, but the customized 'nexus' model has not been created yet.", required,
                 )
-            return CheckResult("NEXUS local model", False, "models/Modelfile is missing.")
-        except Exception as error:
-            return CheckResult("NEXUS local model", False, f"Could not verify the NEXUS model: {error}")
+            return CheckResult(
+                "NEXUS local model", False,
+                f"The configured model '{wanted}' is not installed in Ollama (change it in Settings or run: ollama pull {wanted}).",
+                required,
+            )
+        except requests.exceptions.RequestException:
+            return CheckResult("NEXUS local model", False, "Could not be checked because Ollama is not reachable.", required)
+        except Exception as error:  # noqa: BLE001
+            return CheckResult("NEXUS local model", False, f"Could not verify the NEXUS model: {error}", required)
+
+    def check_online_ai(self):
+        required = self.online_required()
+        if self._gemini_ready():
+            return CheckResult("Online AI (Gemini)", True, "A Gemini API key is configured (no network call was made).", required)
+        return CheckResult(
+            "Online AI (Gemini)", False,
+            "No Gemini API key is configured. Add one in Settings to use online AI and live voice."
+            + ("" if required else " Online AI is optional with your current settings."),
+            required,
+        )
+
+    def check_speech_output(self):
+        try:
+            from core.speech import SpeechManager
+
+            status = SpeechManager(self.settings).status()
+            if status.get("kokoro_installed"):
+                return CheckResult("Speech output", True, "Kokoro is installed.", required=False)
+            if status.get("fallback_available"):
+                return CheckResult(
+                    "Speech output", True,
+                    "Kokoro is not installed; NEXUS will use the Windows voice. See the Voice guide to install Kokoro.",
+                    required=False,
+                )
+            return CheckResult("Speech output", False, "No speech engine is available. Replies will be text only.", required=False)
+        except Exception as error:  # noqa: BLE001
+            return CheckResult("Speech output", False, str(error), required=False)
 
     def check_microphone(self):
         try:
             import sounddevice as sd
+
             devices = sd.query_devices()
             microphones = [device for device in devices if device.get("max_input_channels", 0) > 0]
             if not microphones:
                 return CheckResult("Microphone", False, "No microphone was detected.", required=False)
             return CheckResult("Microphone", True, f"{len(microphones)} microphone device(s) detected.", required=False)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             return CheckResult("Microphone", False, str(error), required=False)
-
-    def check_online_voice(self):
-        try:
-            from core.voice import VoiceService
-            if not VoiceService.has_api_key():
-                return CheckResult(
-                    "Online voice",
-                    False,
-                    "No OpenAI API key is configured for STT/TTS. Voice can be enabled after a key is added.",
-                    required=False,
-                )
-            return CheckResult(
-                "Online voice",
-                True,
-                "OpenAI voice credentials are configured for speech recognition and speech output.",
-                required=False,
-            )
-        except Exception as error:
-            return CheckResult("Online voice", False, str(error), required=False)
-
-    def check_wake_detector(self):
-        try:
-            from core.wake_detector import WakeWordDetector
-            try:
-                import faster_whisper  # noqa: F401
-            except Exception as error:
-                return CheckResult(
-                    "Local wake detector",
-                    False,
-                    f"Faster-Whisper is unavailable: {error}",
-                    required=False,
-                )
-            cache = WakeWordDetector._model_cache_dir()
-            return CheckResult(
-                "Local wake detector",
-                True,
-                f"Local wake detection is available; model cache: {cache}",
-                required=False,
-            )
-        except Exception as error:
-            return CheckResult("Local wake detector", False, str(error), required=False)
 
     def check_database(self):
         try:
             from database.database import Database
+
             database = Database()
             path = database.db_path
             with database.connect() as connection:
                 connection.execute("SELECT 1 FROM conversations LIMIT 1").fetchone()
             return CheckResult("SQLite database", True, f"Database is ready at {path}")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             return CheckResult("SQLite database", False, str(error))
-

@@ -597,6 +597,10 @@ QMenu::separator {
     margin: 5px 8px;
 }
 
+QDialog {
+    background-color: #06121d;
+}
+
 QMessageBox {
     background-color: #07121d;
 }
@@ -965,7 +969,7 @@ QPushButton#secondaryButton {
     border: 1px solid #14384d;
     border-radius: 7px;
     padding: 8px 14px;
-    color: #6b8da1;
+    color: #a9c5d6;
 }
 
 QPushButton#secondaryButton:hover {
@@ -2319,6 +2323,105 @@ QPushButton#interruptButton:hover {
 
 QPushButton#interruptButton:pressed {
     background-color: #380d20;
+}
+
+
+/* ============================================================
+   FORM CONTROLS (settings, wizard, data dialog)
+   Type selectors only, so any #objectName rule above still wins.
+   ============================================================ */
+
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    background-color: #0a1a28;
+    color: #e6f4ff;
+    border: 1px solid #1d4a63;
+    border-radius: 7px;
+    padding: 6px 10px;
+    selection-background-color: #14566f;
+    selection-color: #ffffff;
+}
+
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+    color: #4d6a7a;
+    background-color: #071420;
+    border-color: #12293a;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #0a1a28;
+    color: #e6f4ff;
+    border: 1px solid #1d4a63;
+    selection-background-color: #14566f;
+    selection-color: #ffffff;
+    outline: none;
+}
+
+QListWidget {
+    background-color: #081522;
+    color: #dce9f5;
+    border: 1px solid #17374a;
+    border-radius: 8px;
+}
+
+QListWidget::item {
+    padding: 6px 8px;
+}
+
+QListWidget::item:selected {
+    background-color: #14566f;
+    color: #ffffff;
+}
+
+QTabWidget::pane {
+    border: 1px solid #17374a;
+    border-radius: 8px;
+    background-color: #06121d;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background-color: #081722;
+    color: #8fb0c2;
+    border: 1px solid #14384d;
+    border-bottom: none;
+    padding: 8px 16px;
+    margin-right: 3px;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+}
+
+QTabBar::tab:selected {
+    background-color: #0d2a3d;
+    color: #45d9ff;
+}
+
+QCheckBox, QRadioButton {
+    spacing: 8px;
+    color: #dce9f5;
+}
+
+QPushButton {
+    background-color: #0d2230;
+    color: #cfe8f5;
+    border: 1px solid #27485a;
+    border-radius: 7px;
+    padding: 7px 14px;
+}
+
+QPushButton:hover {
+    background-color: #123044;
+    border-color: #2d6b82;
+}
+
+QPushButton:disabled {
+    background-color: #08141d;
+    color: #4d6a7a;
+    border-color: #0d202c;
 }
 
 """

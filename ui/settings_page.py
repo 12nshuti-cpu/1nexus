@@ -21,7 +21,9 @@ from PySide6.QtWidgets import (
 )
 
 from config.settings import NEXUSSettings
+from core import startup as startup_module
 from core.gemini_engine import gemini_is_configured, set_gemini_api_key
+from core.speech import ENGLISH_VOICES
 
 
 class SettingsPage(QWidget):
@@ -29,6 +31,7 @@ class SettingsPage(QWidget):
 
     settingsSaved = Signal()
     resetRequested = Signal()
+    manageDataRequested = Signal()
 
     def __init__(self, settings: NEXUSSettings, parent=None):
         super().__init__(parent)
@@ -293,6 +296,82 @@ class SettingsPage(QWidget):
         ))
         content_layout.addWidget(section)
 
+        # Speech output engine
+        section, layout = self._section(
+            "SPEECH OUTPUT",
+            "NEXUS speaks with Kokoro when it is installed and falls back to the Windows voice if it is not or if it fails. "
+            "You are told when the fallback voice is used.",
+        )
+        self.tts_engine = QComboBox()
+        self.tts_engine.addItem("Automatic (Kokoro, then Windows voice)", "auto")
+        self.tts_engine.addItem("Kokoro only", "kokoro")
+        self.tts_engine.addItem("Windows voice only", "windows")
+        self.tts_engine.setMinimumWidth(260)
+        layout.addWidget(self._row("Speech engine", self.tts_engine,
+                                   "Kokoro is installed separately (see the Voice guide); it runs in its own helper process."))
+        self.kokoro_voice = QComboBox()
+        for voice in ENGLISH_VOICES:
+            self.kokoro_voice.addItem(voice, voice)
+        self.kokoro_voice.setMinimumWidth(170)
+        layout.addWidget(self._row("Kokoro voice", self.kokoro_voice, "Used for English replies."))
+        self.kokoro_speed = QDoubleSpinBox()
+        self.kokoro_speed.setRange(0.5, 2.0)
+        self.kokoro_speed.setSingleStep(0.1)
+        self.kokoro_speed.setDecimals(1)
+        self.kokoro_speed.setMinimumWidth(100)
+        layout.addWidget(self._row("Speech speed", self.kokoro_speed, "1.0 is normal speed."))
+        content_layout.addWidget(section)
+
+        # Personalization & privacy
+        section, layout = self._section(
+            "PRIVACY & PERSONALIZATION",
+            "NEXUS only remembers what you explicitly ask it to remember. Everything is stored on this PC.",
+        )
+        self.user_name = QLineEdit()
+        self.user_name.setMinimumWidth(200)
+        self.user_name.setPlaceholderText("Optional")
+        layout.addWidget(self._row("Your name", self.user_name, "Used in greetings only."))
+        self.personalization = QCheckBox("Enable memory and personalization")
+        layout.addWidget(self._row(
+            "Personalization", self.personalization,
+            "When off, NEXUS neither saves nor uses memories. Existing memories are kept until you delete them.",
+        ))
+        self.share_memory = QCheckBox("Include saved memories in online (Gemini) requests")
+        layout.addWidget(self._row(
+            "Share memory with online AI", self.share_memory,
+            "Off by default. Saved memories stay on this PC and are never sent to a cloud service unless you enable this.",
+        ))
+        manage = QPushButton("Manage reminders, memories && data...")
+        manage.setObjectName("secondaryButton")
+        manage.clicked.connect(self.manageDataRequested.emit)
+        layout.addWidget(manage)
+        content_layout.addWidget(section)
+
+        # Reminders & window behaviour
+        section, layout = self._section(
+            "REMINDERS & WINDOW",
+            "Reminders notify you while NEXUS is running, including when it is minimised to the system tray.",
+        )
+        self.reminder_notifications = QCheckBox("Show a notification when a reminder is due")
+        layout.addWidget(self._row("Reminder notifications", self.reminder_notifications))
+        self.speak_reminders = QCheckBox("Speak reminders aloud (needs speech output enabled)")
+        layout.addWidget(self._row("Spoken reminders", self.speak_reminders))
+        self.startup_greeting = QCheckBox("Greet me when NEXUS starts")
+        layout.addWidget(self._row("Startup greeting", self.startup_greeting,
+                                   "Uses your real local date and time. It is spoken only if speech output is enabled."))
+        self.close_to_tray = QCheckBox("Keep running in the system tray when the window is closed")
+        layout.addWidget(self._row("Close to tray", self.close_to_tray,
+                                   "Needed for reminders to keep notifying you after you close the window. Use Exit in the tray menu to quit."))
+        self.start_minimized = QCheckBox("Start minimised to the tray")
+        layout.addWidget(self._row("Start minimised", self.start_minimized))
+        self.global_hotkey = QCheckBox("Enable the Ctrl+Alt+N shortcut (runs a small helper in the background)")
+        layout.addWidget(self._row(
+            "Global shortcut", self.global_hotkey,
+            "Off by default. When on, a tiny helper program stays running to open NEXUS with Ctrl+Alt+N, even after "
+            "NEXUS is closed. Takes effect the next time NEXUS starts.",
+        ))
+        content_layout.addWidget(section)
+
         content_layout.addStretch()
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
@@ -353,6 +432,38 @@ class SettingsPage(QWidget):
 
         self.startup_enabled.setChecked(self.settings.start_with_windows)
 
+        engine_index = self.tts_engine.findData(self.settings.tts_engine)
+        if engine_index >= 0:
+            self.tts_engine.setCurrentIndex(engine_index)
+        voice_pick = self.kokoro_voice.findData(self.settings.kokoro_voice)
+        if voice_pick >= 0:
+            self.kokoro_voice.setCurrentIndex(voice_pick)
+        self.kokoro_speed.setValue(self.settings.kokoro_speed)
+        self.user_name.setText(str(self.settings.get("user_name", "") or ""))
+        self.personalization.setChecked(self.settings.personalization_enabled)
+        self.share_memory.setChecked(self.settings.share_memory_with_online)
+        self.reminder_notifications.setChecked(self.settings.reminder_notifications)
+        self.speak_reminders.setChecked(self.settings.speak_reminders)
+        self.startup_greeting.setChecked(self.settings.startup_greeting)
+        self.close_to_tray.setChecked(self.settings.close_to_tray)
+        self.start_minimized.setChecked(self.settings.start_minimized)
+        self.global_hotkey.setChecked(self.settings.global_hotkey_enabled)
+
+    def _apply_windows_startup(self, wanted: bool) -> str:
+        """Change the Windows sign-in entry. Returns an error message, or ``""`` on success."""
+        try:
+            current = startup_module.is_enabled()
+        except startup_module.StartupError as error:
+            # Not Windows: nothing to remove, so only complain if the user asked to turn it on.
+            return str(error) if wanted else ""
+        if current == wanted:
+            return ""
+        try:
+            startup_module.set_enabled(wanted)
+        except startup_module.StartupError as error:
+            return str(error)
+        return ""
+
     def save_settings(self):
         working = Path(self.working_directory.text().strip()).expanduser()
         if not working.exists() or not working.is_dir():
@@ -397,7 +508,23 @@ class SettingsPage(QWidget):
         self.settings.voice_enabled = self.voice_enabled.isChecked()
         self.settings.legacy_openai_voice_enabled = self.legacy_openai_voice.isChecked()
         self.settings.voice_language = self.voice_language.currentData() or "auto"
+        startup_error = self._apply_windows_startup(self.startup_enabled.isChecked())
+        if startup_error:
+            self.startup_enabled.setChecked(False)
         self.settings.start_with_windows = self.startup_enabled.isChecked()
+
+        self.settings.tts_engine = self.tts_engine.currentData() or "auto"
+        self.settings.kokoro_voice = self.kokoro_voice.currentData() or "af_heart"
+        self.settings.kokoro_speed = self.kokoro_speed.value()
+        self.settings.set("user_name", self.user_name.text().strip()[:60])
+        self.settings.personalization_enabled = self.personalization.isChecked()
+        self.settings.share_memory_with_online = self.share_memory.isChecked()
+        self.settings.reminder_notifications = self.reminder_notifications.isChecked()
+        self.settings.speak_reminders = self.speak_reminders.isChecked()
+        self.settings.startup_greeting = self.startup_greeting.isChecked()
+        self.settings.close_to_tray = self.close_to_tray.isChecked()
+        self.settings.start_minimized = self.start_minimized.isChecked()
+        self.settings.global_hotkey_enabled = self.global_hotkey.isChecked()
 
         self.gemini_key_status.setText(
             "Gemini API key detected. Online mode is selected; compatible text requests and Gemini Live voice can use it."
@@ -407,6 +534,13 @@ class SettingsPage(QWidget):
 
         self.settingsSaved.emit()
 
+        if startup_error:
+            QMessageBox.warning(
+                self,
+                "Settings saved - with one problem",
+                "Your settings were saved, but 'Start NEXUS with Windows' could not be changed:\n\n" + startup_error,
+            )
+            return
         QMessageBox.information(
             self,
             "Settings saved",

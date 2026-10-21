@@ -5,6 +5,20 @@ import sys
 from pathlib import Path
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """``with db.connect() as c:`` commits/rolls back *and closes* the connection.
+
+    The stock sqlite3 context manager leaves the connection open, which leaks
+    file handles (and on Windows keeps the database file locked).
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 class Database:
 
     def __init__(self, data_dir=None):
@@ -27,6 +41,12 @@ class Database:
 
     @staticmethod
     def get_data_directory():
+
+        override = os.environ.get("NEXUS_DATA_DIR")
+
+        if override:
+
+            return Path(override) / "data"
 
         local_app_data = os.environ.get("LOCALAPPDATA")
 
@@ -80,6 +100,7 @@ class Database:
             self.db_path,
             timeout=30,
             check_same_thread=False,
+            factory=_ClosingConnection,
         )
 
         connection.row_factory = sqlite3.Row

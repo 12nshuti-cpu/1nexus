@@ -5,6 +5,8 @@ from core.system_monitor import SystemMonitor
 from core.ai import AIService
 from core.pc_control import PCController
 from core.shell_executor import ShellExecutor
+from config.settings import APP_VERSION
+from core.assistant import AssistantEngine
 
 
 class CommandEngine:
@@ -23,9 +25,21 @@ class CommandEngine:
     }
 
     def __init__(self):
-        self.ai = AIService()
+        # The assistant layer (reminders, memory, calculator, ...) owns persistent
+        # stores and a pending-confirmation state, so it survives
+        # reload_configuration().
+        self.assistant = AssistantEngine()
+        self.ai = self._new_ai()
         self.pc = PCController()
         self.shell = ShellExecutor()
+
+    def _new_ai(self):
+        ai = AIService()
+        ai.memory_provider = self.assistant.memory_context
+        return ai
+
+    def is_assistant_command(self, command):
+        return self.assistant.can_handle(command)
 
     def is_shell_command(self, command):
         return self.shell.is_shell_command(command)
@@ -40,7 +54,7 @@ class CommandEngine:
 
     def reload_configuration(self):
         """Reload services so newly saved NEXUS settings take effect."""
-        self.ai = AIService()
+        self.ai = self._new_ai()
         self.shell = ShellExecutor()
 
     def shell_requires_confirmation(self, command):
@@ -57,6 +71,8 @@ class CommandEngine:
             return True
         if self.is_shell_command(command):
             return True
+        if self.is_assistant_command(command):
+            return True
         return self.pc.can_handle(command)
 
     def execute(self, command):
@@ -70,6 +86,12 @@ class CommandEngine:
         # NEXUS itself is handled above the normal PC application layer.
         if command_lower in self.NEXUS_OPEN_COMMANDS:
             return "__OPEN_NEXUS__"
+
+        # Reminders, memory, calculator, units, diagnostics, date/time. These run
+        # through the validated tool registry and report real outcomes.
+        assistant_reply = self.assistant.handle(command)
+        if assistant_reply is not None:
+            return assistant_reply
 
         if self.is_shell_command(command) and not self.pc.can_handle(command):
             if self.shell.settings.confirm_risky_commands and self.shell.is_risky(command):
@@ -224,6 +246,6 @@ class CommandEngine:
             "| Field | Value |\n"
             "|---|---|\n"
             "| Type | Personal Digital Command Center |\n"
-            "| Version | 0.4.0 |\n\n"
+            f"| Version | {APP_VERSION} |\n\n"
             "Nexus is being built as a modular desktop and online assistant."
         )
