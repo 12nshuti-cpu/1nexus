@@ -27,6 +27,32 @@ websites, summarise text files, run Windows commands (with confirmation), and re
 
 "Search for X" opens a Google search in your browser; NEXUS does not fetch and read web pages.
 
+## The interface
+
+A sidebar holds navigation and your recent chats; it collapses to icons on narrow windows (or with
+Ctrl+B).
+
+* **Home**: a greeting, the voice orb (click it to talk), a message box, suggested prompts, and cards
+  for upcoming reminders, recent chats, this PC's health and recent activity.
+* **Chat**: the conversation, with streamed answers, copy and read-aloud buttons, and a voice bar that
+  shows when NEXUS is listening, thinking or speaking.
+* **Reminders** and **Memory**: add, edit, complete and delete items in plain language ("call Sam in
+  10 minutes"). They use the same storage as the chat commands.
+* **System**: live CPU, memory, storage and battery readings, measured on this PC.
+* **Activity**: everything NEXUS did in this session.
+* **Settings**: theme (dark, light or match Windows), accent colour and your name at the top, then the
+  AI, voice, privacy and start-up options.
+
+| Shortcut | Action |
+|---|---|
+| Enter / Shift+Enter | Send / new line |
+| Ctrl+M | Talk (press again to finish) |
+| Esc | Stop listening or speaking, otherwise clear the message box |
+| Ctrl+N | New chat |
+| Ctrl+K | Search chats |
+| Ctrl+1 … Ctrl+6, Ctrl+, | Home, Chat, Reminders, Memory, System, Activity, Settings |
+| Ctrl+B / Ctrl+Shift+L | Collapse sidebar / switch light and dark theme |
+
 ## Install
 
 **With the installer** (once you have built it, see [docs/RELEASE.md](docs/RELEASE.md)): run

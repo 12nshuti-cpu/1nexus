@@ -20,7 +20,7 @@ from core.background_voice import NexusBackgroundVoice
 from core.dependency_manager import NexusDependencyManager
 from core.logger import configure_logging, get_logger, install_exception_hooks
 from ui.main_window import MainWindow
-from ui.styles import DARK_THEME
+from ui.theme import theme as nexus_theme
 
 
 def resource_path(relative_path):
@@ -190,7 +190,6 @@ def _show_first_run_wizard(settings, log):
     from ui.first_run_wizard import FirstRunWizard
 
     wizard = FirstRunWizard(settings)
-    wizard.setStyleSheet(DARK_THEME)
     wizard.exec()
     warnings = getattr(wizard, "last_warnings", [])
     for line in warnings:
@@ -287,6 +286,12 @@ def main():
     app.setApplicationVersion(APP_VERSION)
     app.setQuitOnLastWindowClosed(False)
     app.setFont(QFont("Segoe UI", 10))
+
+    # The theme (dark, light or follow Windows) and accent apply to every window, including
+    # the first-run wizard, so it is installed on the application before anything is shown.
+    settings_for_theme = NEXUSSettings()
+    nexus_theme().apply(app, mode=str(settings_for_theme.get("ui_theme", "dark") or "dark"),
+                        accent=str(settings_for_theme.get("ui_accent", "#45d9ff") or "#45d9ff"))
 
     nexus_icon = QIcon(str(resource_path("assets/nexus.ico")))
     app.setWindowIcon(nexus_icon)

@@ -63,13 +63,14 @@ class SettingsPage(QWidget):
         row = QFrame()
         row.setObjectName("settingsRow")
         layout = QVBoxLayout(row)
-        layout.setContentsMargins(0, 6, 0, 6)
+        layout.setContentsMargins(0, 10, 0, 6)
         layout.setSpacing(4)
 
         top = QHBoxLayout()
         text = QLabel(label)
-        text.setObjectName("cardTitle")
-        top.addWidget(text)
+        text.setObjectName("rowTitle")
+        text.setWordWrap(True)
+        top.addWidget(text, 1)
         top.addStretch()
         top.addWidget(widget)
         layout.addLayout(top)
@@ -83,37 +84,26 @@ class SettingsPage(QWidget):
         return row
 
     def _build(self):
+        # The window around this page supplies the title, so the page starts with its sections.
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 16, 18, 16)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(12)
-
-        header = QFrame()
-        header.setObjectName("dashboardPanel")
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(18, 16, 18, 16)
-
-        title = QLabel("NEXUS SETTINGS")
-        title.setObjectName("pageTitle")
-        header_layout.addWidget(title)
-
-        subtitle = QLabel("Control how NEXUS uses your PC, AI model, voice, and Windows startup.")
-        subtitle.setObjectName("mutedText")
-        subtitle.setWordWrap(True)
-        header_layout.addWidget(subtitle)
-        outer.addWidget(header)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll = scroll
 
         content = QWidget()
+        content.setObjectName("scrollContent")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(12)
+        content_layout.setContentsMargins(0, 0, 8, 0)
+        content_layout.setSpacing(14)
+        self.content_layout = content_layout
 
         # PC / shell execution
         section, layout = self._section(
-            "PC CONTROL & SHELL",
+            "PC control & commands",
             "Explicit shell requests such as 'run ipconfig' or 'powershell Get-Process' are executed locally.",
         )
 
@@ -187,7 +177,7 @@ class SettingsPage(QWidget):
 
         # AI settings
         section, layout = self._section(
-            "LOCAL AI",
+            "AI engine",
             "Choose the Ollama model NEXUS uses for normal conversations.",
         )
 
@@ -250,7 +240,7 @@ class SettingsPage(QWidget):
 
         # Voice / startup
         section, layout = self._section(
-            "VOICE & STARTUP",
+            "Voice & start-up",
             "Persist voice preferences and whether NEXUS should launch with Windows.",
         )
 
@@ -298,7 +288,7 @@ class SettingsPage(QWidget):
 
         # Speech input (local recognition)
         section, layout = self._section(
-            "SPEECH INPUT",
+            "Speech input",
             "The microphone button records only when you press it. In Local mode (or Automatic without a Gemini key) "
             "your speech is turned into text on this PC with Whisper; the audio is not saved or uploaded.",
         )
@@ -332,7 +322,7 @@ class SettingsPage(QWidget):
 
         # Speech output engine
         section, layout = self._section(
-            "SPEECH OUTPUT",
+            "Speech output",
             "NEXUS speaks with Kokoro when it is installed and falls back to the Windows voice if it is not or if it fails. "
             "You are told when the fallback voice is used.",
         )
@@ -358,7 +348,7 @@ class SettingsPage(QWidget):
 
         # Personalization & privacy
         section, layout = self._section(
-            "PRIVACY & PERSONALIZATION",
+            "Privacy & personalisation",
             "NEXUS only remembers what you explicitly ask it to remember. Everything is stored on this PC.",
         )
         self.user_name = QLineEdit()
@@ -383,7 +373,7 @@ class SettingsPage(QWidget):
 
         # Reminders & window behaviour
         section, layout = self._section(
-            "REMINDERS & WINDOW",
+            "Reminders & window",
             "Reminders notify you while NEXUS is running, including when it is minimised to the system tray.",
         )
         self.reminder_notifications = QCheckBox("Show a notification when a reminder is due")
@@ -423,6 +413,10 @@ class SettingsPage(QWidget):
         save.clicked.connect(self.save_settings)
         buttons.addWidget(save)
         outer.addLayout(buttons)
+
+    def insert_section(self, widget: QWidget, index: int = 0) -> None:
+        """Add a section (for example Appearance, which the main window owns) to this page."""
+        self.content_layout.insertWidget(index, widget)
 
     def browse_directory(self):
         current = self.working_directory.text().strip() or str(Path.home())

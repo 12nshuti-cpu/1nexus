@@ -53,12 +53,12 @@ class SystemCheckDialog(QFrame):
         brand.setObjectName("systemBrand")
         top.addWidget(brand)
         top.addStretch()
-        badge = QLabel("STARTUP DIAGNOSTICS")
+        badge = QLabel("Start-up check")
         badge.setObjectName("systemBadge")
         top.addWidget(badge)
         card_layout.addLayout(top)
 
-        title = QLabel("Preparing your command center")
+        title = QLabel("Getting NEXUS ready")
         title.setObjectName("systemTitle")
         card_layout.addWidget(title)
 
@@ -107,36 +107,7 @@ class SystemCheckDialog(QFrame):
         card_layout.addLayout(bottom)
         root.addWidget(self.card)
 
-        self.setStyleSheet("""
-            QFrame#systemCheckOverlay { background: rgba(2, 8, 15, 226); }
-            QFrame#systemCheckCard { background: #081522; border: 1px solid #1c3d52; border-radius: 18px; }
-            QLabel#systemBrand { color: #79eaff; font-family: \"Segoe UI\"; font-size: 13px; font-weight: 800; letter-spacing: 2px; }
-            QLabel#systemBadge { color: #63d8ee; background: #0d2737; border: 1px solid #22556c; border-radius: 9px; padding: 6px 10px; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
-            QLabel#systemTitle { color: #edfaff; font-size: 29px; font-weight: 700; }
-            QLabel#systemStatus { color: #87aabd; font-size: 13px; }
-            QFrame#systemLine { background: #173247; border: none; }
-            QScrollArea#systemResultsScroll { background: transparent; border: none; }
-            QWidget#systemResultsScroll QWidget { background: transparent; }
-            QLabel#checkName { color: #eefaff; font-size: 13px; font-weight: 700; }
-            QLabel#checkDetails { color: #7f9aaa; font-size: 11px; }
-            QFrame#checkFrame { background: #0b1c2b; border: 1px solid #17374a; border-radius: 10px; }
-            QLabel#checkStatusGood { color: #55e6a5; background: #0d2a22; border: 1px solid #215c49; border-radius: 8px; font-size: 16px; font-weight: 800; }
-            QLabel#checkStatusBad { color: #ff9b9b; background: #321b20; border: 1px solid #6e3038; border-radius: 8px; font-size: 16px; font-weight: 800; }
-            QLabel#checkStatusOptional { color: #d9b56f; background: #2e2616; border: 1px solid #66501f; border-radius: 8px; font-size: 14px; font-weight: 800; }
-            QLabel#systemHint { color: #607c8d; font-size: 11px; }
-            QPushButton#systemContinue { background: #11364a; color: #8cefff; border: 1px solid #2a7894; border-radius: 10px; padding: 10px 16px; font-size: 12px; font-weight: 800; }
-            QPushButton#systemContinue:hover { background: #15455c; }
-            QPushButton#systemContinue:pressed { background: #0c2a3a; }
-            QPushButton#systemContinue:disabled { color: #426071; background: #0b202c; border-color: #163746; }
-            QPushButton#systemRetry { background: #0d2230; color: #8faebe; border: 1px solid #27485a; border-radius: 10px; padding: 10px 14px; font-size: 11px; font-weight: 700; }
-            QPushButton#systemRetry:hover { background: #123044; }
-            QPushButton#systemFix { background: #102f40; color: #83eaff; border: 1px solid #2d6b82; border-radius: 7px; padding: 7px 10px; font-size: 10px; font-weight: 800; }
-            QPushButton#systemFix:hover { background: #164258; }
-            QLabel#checkAction { color: #d5a46c; font-size: 10px; padding-top: 2px; }
-            QScrollBar:vertical { background: #07131e; width: 8px; margin: 2px; }
-            QScrollBar::handle:vertical { background: #23475a; border-radius: 4px; min-height: 28px; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-        """)
+        # Colours come from the application theme (ui/theme.py).
 
     def update_status(self, text: str):
         self.status_label.setText(str(text))

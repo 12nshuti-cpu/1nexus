@@ -159,6 +159,17 @@ Your creator is NSHUTI Emmanuel.
 # Persistent application settings
 # ------------------------------------------------------------
 
+def open_qsettings(organization: str = "NEXUS", application: str = "NEXUS") -> QSettings:
+    """The settings store: the Windows registry normally, or an INI file in
+    ``NEXUS_SETTINGS_DIR`` when that is set (the test suite sets it so tests can never
+    overwrite a real user's preferences)."""
+    folder = os.environ.get("NEXUS_SETTINGS_DIR", "").strip()
+    if folder:
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        return QSettings(str(Path(folder) / f"{organization}-{application}.ini"), QSettings.IniFormat)
+    return QSettings(organization, application)
+
+
 class NEXUSSettings:
     """Persistent NEXUS settings used by the UI and core services."""
 
@@ -182,6 +193,7 @@ class NEXUSSettings:
         "voice_language": "auto",
         "user_name": "",
         "ui_accent": "#45d9ff",
+        "ui_theme": "dark",            # dark | light | system
         "start_with_windows": False,
         # Personalization / privacy
         "personalization_enabled": True,
@@ -208,7 +220,7 @@ class NEXUSSettings:
     }
 
     def __init__(self):
-        self.store = QSettings(self.ORGANIZATION, self.APPLICATION)
+        self.store = open_qsettings(self.ORGANIZATION, self.APPLICATION)
 
     def get(self, key: str, default=None):
         if default is None:

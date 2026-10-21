@@ -20,7 +20,14 @@ os.environ["XDG_CONFIG_HOME"] = str(_SESSION_DIR / "xdg-config")
 os.environ["XDG_DATA_HOME"] = str(_SESSION_DIR / "xdg-data")
 os.environ["HOME"] = str(_SESSION_DIR / "home")
 os.environ["NEXUS_DISABLE_KEYRING"] = "1"
+# On Windows QSettings lives in the registry and ignores XDG paths; this keeps every
+# test's settings in a throw-away INI file instead of the real user's preferences.
+os.environ["NEXUS_SETTINGS_DIR"] = str(_SESSION_DIR / "settings")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# The off-screen renderer finds no fonts on Windows unless told where they are; with real
+# fonts the UI tests exercise the same text layout code the app uses.
+if os.name == "nt" and Path(os.environ.get("WINDIR", r"C:\Windows"), "Fonts").is_dir():
+    os.environ.setdefault("QT_QPA_FONTDIR", str(Path(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")))
 for _name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "NEXUS_GEMINI_API_KEY", "OPENAI_API_KEY", "LOCALAPPDATA"):
     os.environ.pop(_name, None)
 Path(os.environ["HOME"]).mkdir(parents=True, exist_ok=True)
