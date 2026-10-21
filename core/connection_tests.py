@@ -21,6 +21,16 @@ class Outcome:
     message: str
 
 
+def _missing_model_message(wanted: str) -> str:
+    """How to get a missing model. 'nexus' is built locally from models/Modelfile - it cannot be pulled."""
+    if wanted.split(":")[0] == app_settings.NEXUS_MODEL.split(":")[0]:
+        return (f"Ollama is running, but the NEXUS model '{wanted}' has not been created yet. In a terminal run: "
+                f"ollama pull {app_settings.BASE_MODEL}   then   ollama create {wanted.split(':')[0]} -f \"{app_settings.MODELFILE_PATH}\"   "
+                "(or pick another model in Settings).")
+    return (f"Ollama is running, but the model '{wanted}' is not installed. "
+            f"Run: ollama pull {wanted}   (or pick another model in Settings).")
+
+
 def check_ollama(settings: NEXUSSettings | None = None, http_get: Callable = requests.get) -> Outcome:
     """Is Ollama running, and is the configured model installed?"""
     settings = settings or NEXUSSettings()
@@ -40,8 +50,7 @@ def check_ollama(settings: NEXUSSettings | None = None, http_get: Callable = req
     wanted = (settings.ai_model or app_settings.NEXUS_MODEL).lower()
     if wanted in names or f"{wanted}:latest" in names or any(n.startswith(wanted + ":") for n in names):
         return Outcome(True, f"Ollama is running and the model '{wanted}' is installed.")
-    return Outcome(False, f"Ollama is running, but the model '{wanted}' is not installed. "
-                          f"Run: ollama pull {wanted}   (or pick another model in Settings).")
+    return Outcome(False, _missing_model_message(wanted))
 
 
 def check_gemini(settings: NEXUSSettings | None = None, generate: Callable | None = None) -> Outcome:

@@ -975,6 +975,69 @@ class VoiceCaptureWorker(QThread):
             sd.wait()
 
 
+class DocumentSummaryWorker(QObject):
+    """Reads a user-chosen text file and summarises it off the interface thread.
+
+    Runs on a daemon Python thread (not a QThread) on purpose: if the user closes NEXUS while a
+    summary is still being written, the thread can be abandoned safely. Killing a thread that is
+    running Python code is never safe, and a QThread must not be destroyed while it runs.
+    """
+
+    done = Signal(str, str, str)       # file name, summary text, which engine produced it
+    failed = Signal(str, bool)         # message, True if it is a problem with the file (not the AI)
+
+    def __init__(self, ai_service, path, parent=None):
+        super().__init__(parent)
+        self.ai = ai_service
+        self.path = path
+        self._thread = None
+        self._abandoned = False
+
+    # -- QThread-like surface used by the window ------------------------------
+    def start(self):
+        self._thread = threading.Thread(target=self._run, name="NEXUS-Summary", daemon=True)
+        self._thread.start()
+
+    def isRunning(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def wait(self, msecs=30000):
+        if self._thread is not None:
+            self._thread.join(timeout=msecs / 1000.0)
+        return not self.isRunning()
+
+    def abandon(self):
+        """The window is closing: finish quietly without signalling anything."""
+        self._abandoned = True
+
+    # -- worker thread -------------------------------------------------------------
+    def _emit(self, signal, *args):
+        if not self._abandoned:
+            signal.emit(*args)
+
+    def _run(self):
+        from core.documents import DocumentError, read_document
+        from core.gemini_engine import redact_secrets
+
+        try:
+            document = read_document(self.path)
+        except DocumentError as error:
+            self._emit(self.failed, str(error), True)
+            return
+        try:
+            summary, where = self.ai.summarize_document(
+                document.name, document.text, document.truncated, document.total_chars
+            )
+            if not summary:
+                raise RuntimeError("The model returned an empty summary.")
+            if document.truncated:
+                summary += (f"\n\n_Only the first {len(document.text):,} of {document.total_chars:,} "
+                            "characters were summarised._")
+            self._emit(self.done, document.name, redact_secrets(summary), where)
+        except Exception as error:  # noqa: BLE001 - shown to the user as a failed request
+            self._emit(self.failed, redact_secrets(f"I could not summarise {document.name}: {error}"), False)
+
+
 # ============================================================
 # TERMINAL INPUT
 # ============================================================
@@ -1391,6 +1454,26 @@ class MainWindow(QMainWindow):
             try:
                 thread.quit()
                 thread.wait(1500)
+            except Exception:  # noqa: BLE001
+                pass
+        check_thread = getattr(self, "_system_check_thread", None)
+        if check_thread is not None and check_thread.is_alive():
+            check_thread.join(timeout=4.0)
+        # Stop an active microphone capture and any running document summary, so closing the
+        # window never leaves the microphone open or a thread running into interpreter exit.
+        voice_worker = getattr(self, "voice_worker", None)
+        if voice_worker is not None:
+            try:
+                if voice_worker.isRunning():
+                    voice_worker.cancel()
+                    voice_worker.wait(2000)
+            except Exception:  # noqa: BLE001
+                pass
+        document_worker = getattr(self, "document_worker", None)
+        if document_worker is not None:
+            try:
+                document_worker.abandon()   # a daemon thread: it is left to finish quietly, never killed
+                document_worker.wait(1500)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -2014,11 +2097,16 @@ class MainWindow(QMainWindow):
 
         def work():
             try:
-                self._system_check_bridge.finished.emit(NEXUSSystemChecker().run_all_checks(), "")
-            except Exception as error:  # noqa: BLE001
-                self._system_check_bridge.finished.emit([], str(error))
+                results, error = NEXUSSystemChecker().run_all_checks(), ""
+            except Exception as failure:  # noqa: BLE001
+                results, error = [], str(failure)
+            if not getattr(self, "_quitting", False):  # never signal into a window that is closing
+                self._system_check_bridge.finished.emit(results, error)
 
-        threading.Thread(target=work, name="NEXUS-SystemCheck", daemon=True).start()
+        # Kept so shutdown() can wait for it: a thread still importing modules or talking to
+        # Qt while the interpreter finalises is what used to crash NEXUS right after launch.
+        self._system_check_thread = threading.Thread(target=work, name="NEXUS-SystemCheck", daemon=True)
+        self._system_check_thread.start()
 
     def _system_check_done(self, results, error):
         self._system_check_running = False
@@ -3541,6 +3629,74 @@ class MainWindow(QMainWindow):
         self.refresh_conversation_list()
         self.render_current_conversation()
         self.assistant_status.setText("● READY")
+
+    # ========================================================
+    # DOCUMENT SUMMARY
+    # ========================================================
+
+    def start_document_summary(self, path_text=""):
+        worker = getattr(self, "document_worker", None)
+        if worker is not None and worker.isRunning():
+            self.add_activity("A document summary is already in progress.")
+            return
+        if not path_text:
+            path_text, _ = QFileDialog.getOpenFileName(
+                self,
+                "Choose a document to summarise",
+                str(Path.home()),
+                "Text documents (*.txt *.md *.csv *.log *.json *.xml *.yaml *.yml *.ini *.html *.py);;All files (*)",
+            )
+            if not path_text:
+                self.add_activity("Document summary cancelled.")
+                return
+
+        name = Path(str(path_text).strip("\"'")).name or str(path_text)
+        if self.settings.ai_engine == "online":
+            where = "Gemini online (the text will leave this PC because Online mode is selected)"
+        else:
+            where = "the local model on this PC (the text is not uploaded)"
+        self.add_activity(f"Summarising {name} with {where}...")
+
+        conversation_id = self.ensure_conversation()
+        user_text = f"Summarize the document: {name}"
+        self.conversation_manager.add_message(conversation_id, "user", user_text)
+        conversation = self.conversation_manager.get_conversation(conversation_id)
+        if conversation and conversation.get("title") == "New Conversation":
+            self.conversation_manager.update_title(
+                conversation_id, self.conversation_manager.create_title_from_message(user_text)
+            )
+        self.refresh_conversation_list()
+        self.render_current_conversation()
+        self.set_core_state("thinking")
+        self.assistant_status.setText("● THINKING")
+
+        self._summary_conversation_id = conversation_id
+        self.document_worker = DocumentSummaryWorker(self.command_engine.ai, path_text, self)
+        self.document_worker.done.connect(self.handle_document_summary)
+        self.document_worker.failed.connect(self.handle_document_summary_error)
+        self.document_worker.start()
+
+    def _finish_document_turn(self, text, ok):
+        conversation_id = getattr(self, "_summary_conversation_id", None)
+        if conversation_id is not None:
+            self.conversation_manager.add_message(conversation_id, "assistant", text)
+        self.refresh_conversation_list()
+        self.render_current_conversation()
+        self.set_core_idle_state()
+        self.assistant_status.setText("● READY" if ok else "● ERROR")
+        if self.voice_enabled:
+            try:
+                self.speak_response(text, self.current_voice_language)
+            except Exception as error:  # noqa: BLE001
+                self.add_activity(f"Voice output error: {error}")
+
+    def handle_document_summary(self, name, summary, where):
+        self.add_activity(f"Summary of {name} ready ({where}).")
+        self._finish_document_turn(f"**Summary of {name}**\n\n{summary}\n\n_Produced by {where}._", True)
+
+    def handle_document_summary_error(self, message, file_problem):
+        self.add_activity(message)
+        self._finish_document_turn(message, file_problem)
 
     def handle_voice_error(self, message):
         self.set_core_idle_state()
@@ -5442,6 +5598,14 @@ class MainWindow(QMainWindow):
         command = redact_secrets(command).strip()
 
         if not command:
+            return
+
+        # "summarize C:\\notes\\report.txt" reads that file; ordinary questions fall through to the AI.
+        from core.documents import parse_summarize_request
+        document_request = parse_summarize_request(command)
+        if document_request is not None:
+            self.assistant_input.clear()
+            self.start_document_summary(document_request)
             return
 
         self.set_core_state("thinking")

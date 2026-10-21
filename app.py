@@ -199,6 +199,29 @@ def _show_first_run_wizard(settings, log):
         QMessageBox.information(None, "NEXUS setup", "\n\n".join(warnings))
 
 
+def _destroy_ui(app, *objects):
+    """Delete Qt widgets while the QApplication still exists.
+
+    If Python releases the QApplication before the widgets that belong to it (which depends on
+    local-variable order and garbage-collection timing), Qt can crash during process exit.
+    """
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    for obj in objects:
+        if obj is None:
+            continue
+        try:
+            obj.hide()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            obj.deleteLater()
+        except Exception:  # noqa: BLE001
+            pass
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+
+
 def _selftest(log):
     """Build the real UI without showing it, check bundled resources, then exit.
 
@@ -211,6 +234,7 @@ def _selftest(log):
     for relative in ("assets/nexus.ico", "models/Modelfile", "core/kokoro_tts_worker.py"):
         if not resource_path(relative).is_file():
             problems.append(f"missing bundled resource: {relative}")
+    app = window = None
     try:
         app = QApplication.instance() or QApplication(sys.argv)
         window = MainWindow()
@@ -222,6 +246,9 @@ def _selftest(log):
     except Exception as error:  # noqa: BLE001
         log.exception("selftest: the main window failed to start")
         problems.append(f"main window failed to start: {error}")
+    if app is not None:
+        _destroy_ui(app, window)
+        window = None
     for problem in problems:
         log.error("selftest: %s", problem)
         print(f"SELFTEST FAILED: {problem}", file=sys.stderr)
@@ -341,6 +368,8 @@ def main():
     log.info("NEXUS ready.")
     exit_code = app.exec()
     _ = mutex  # keep the single-instance mutex alive until the Qt loop ends
+    _destroy_ui(app, window, tray)  # widgets must go before the QApplication (see _destroy_ui)
+    window = tray = None
     log.info("NEXUS exited with code %s", exit_code)
     return exit_code
 

@@ -248,7 +248,12 @@ def test_ollama_check_ok_missing_model_and_down(settings):
     ok = check_ollama(settings, http_get=lambda *a, **k: _Resp({"models": [{"name": "nexus:latest"}]}))
     assert ok.ok
     missing = check_ollama(settings, http_get=lambda *a, **k: _Resp({"models": [{"name": "llama3:8b"}]}))
-    assert not missing.ok and "ollama pull nexus" in missing.message
+    assert not missing.ok
+    # "nexus" is built locally from models/Modelfile; telling users to pull it would be wrong.
+    assert "ollama create nexus -f" in missing.message and "ollama pull nexus" not in missing.message
+    settings.ai_model = "mistral"
+    other = check_ollama(settings, http_get=lambda *a, **k: _Resp({"models": []}))
+    assert "ollama pull mistral" in other.message  # ordinary registry models can be pulled
 
     def down(*a, **k):
         raise requests.exceptions.ConnectionError()

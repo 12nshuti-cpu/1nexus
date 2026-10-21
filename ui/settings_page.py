@@ -304,13 +304,9 @@ class SettingsPage(QWidget):
         )
         self.microphone = QComboBox()
         self.microphone.addItem("System default", None)
-        try:
-            from core.stt import list_input_devices
-
-            for index, name in list_input_devices():
-                self.microphone.addItem(f"{name} (#{index})", index)
-        except Exception:  # noqa: BLE001 - listing devices must never break Settings
-            pass
+        # The device list is filled in the first time this page is shown (see showEvent): asking the
+        # audio drivers while the window is still being built can stall start-up on some PCs.
+        self._microphones_loaded = False
         self.microphone.setMinimumWidth(260)
         layout.addWidget(self._row("Microphone", self.microphone, "Pick a specific input device, or leave on the system default."))
         self.stt_model = QComboBox()
@@ -444,6 +440,29 @@ class SettingsPage(QWidget):
             self.ai_engine.setCurrentIndex(online_index)
         self.save_settings()
 
+    def showEvent(self, event):  # noqa: N802 - Qt override
+        super().showEvent(event)
+        self._load_microphones()
+
+    def _load_microphones(self):
+        """Fill the microphone list once, keeping the saved choice selected."""
+        if self._microphones_loaded:
+            return
+        self._microphones_loaded = True
+        try:
+            from core.stt import list_input_devices
+
+            devices = list_input_devices()
+        except Exception:  # noqa: BLE001 - listing devices must never break Settings
+            devices = []
+        saved = self.settings.microphone_device
+        for index, name in devices:
+            self.microphone.addItem(f"{name} (#{index})", index)
+        if saved is not None and self.microphone.findData(saved) < 0:
+            self.microphone.addItem(f"Saved device (#{saved}) - not currently connected", saved)
+        pick = self.microphone.findData(saved)
+        self.microphone.setCurrentIndex(pick if pick >= 0 else 0)
+
     def load_settings(self):
         self.execution_enabled.setChecked(self.settings.execution_enabled)
 
@@ -477,8 +496,9 @@ class SettingsPage(QWidget):
         if voice_pick >= 0:
             self.kokoro_voice.setCurrentIndex(voice_pick)
         self.kokoro_speed.setValue(self.settings.kokoro_speed)
-        mic_pick = self.microphone.findData(self.settings.microphone_device)
-        self.microphone.setCurrentIndex(mic_pick if mic_pick >= 0 else 0)
+        if self._microphones_loaded:
+            mic_pick = self.microphone.findData(self.settings.microphone_device)
+            self.microphone.setCurrentIndex(mic_pick if mic_pick >= 0 else 0)
         model_pick = self.stt_model.findData(self.settings.stt_model)
         if model_pick >= 0:
             self.stt_model.setCurrentIndex(model_pick)
@@ -560,7 +580,8 @@ class SettingsPage(QWidget):
         self.settings.tts_engine = self.tts_engine.currentData() or "auto"
         self.settings.kokoro_voice = self.kokoro_voice.currentData() or "af_heart"
         self.settings.kokoro_speed = self.kokoro_speed.value()
-        self.settings.microphone_device = self.microphone.currentData()
+        if self._microphones_loaded:  # otherwise the page never listed devices; keep the stored choice
+            self.settings.microphone_device = self.microphone.currentData()
         self.settings.stt_model = self.stt_model.currentData() or "base"
         self.settings.push_to_talk = self.push_to_talk.isChecked()
         self.settings.set("user_name", self.user_name.text().strip()[:60])

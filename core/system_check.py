@@ -137,7 +137,8 @@ class NEXUSSystemChecker:
             if wanted == app_settings.NEXUS_MODEL and modelfile.is_file():
                 return CheckResult(
                     "NEXUS local model", False,
-                    "models/Modelfile is present, but the customized 'nexus' model has not been created yet.", required,
+                    "The customized 'nexus' model has not been created yet. After 'ollama pull "
+                    f"{self.BASE_MODEL}', run: ollama create nexus -f \"{modelfile}\"", required,
                 )
             return CheckResult(
                 "NEXUS local model", False,

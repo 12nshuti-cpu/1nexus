@@ -199,3 +199,111 @@ def test_local_voice_turn_surfaces_recognition_errors(qapp, monkeypatch, setting
     worker.failed.connect(failures.append)
     worker.run()
     assert failures == ["No microphone was found."]
+
+
+# ----------------------------------------------------------- document summary flow
+def _messages(window):
+    return window.conversation_manager.get_messages(window.current_conversation_id)
+
+
+def test_summarize_command_reads_the_file_and_stores_the_summary(window, qapp, tmp_path, monkeypatch):
+    doc = tmp_path / "notes.txt"
+    doc.write_text("Budget meeting moved to Friday. Bring the Q3 numbers.", encoding="utf-8")
+    seen = {}
+
+    def fake_summarize(name, text, truncated=False, total_chars=0):
+        seen.update(name=name, text=text)
+        return "Meeting is on Friday.", "test-model (on this PC)"
+
+    monkeypatch.setattr(window.command_engine.ai, "summarize_document", fake_summarize)
+    window.process_command(f"summarize {doc}")
+    window.document_worker.wait(10000)
+    qapp.processEvents()
+
+    assert seen["name"] == "notes.txt" and "Budget meeting" in seen["text"]
+    roles = [(m["role"], m["content"]) for m in _messages(window)]
+    assert roles[0] == ("user", "Summarize the document: notes.txt")
+    assert roles[-1][0] == "assistant" and "Meeting is on Friday." in roles[-1][1]
+
+
+def test_summarize_missing_file_reports_the_problem_truthfully(window, qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(window.command_engine.ai, "summarize_document",
+                        lambda *a, **k: pytest.fail("the model must not be called for a missing file"))
+    window.process_command(f"summarize {tmp_path / 'ghost.txt'}")
+    window.document_worker.wait(10000)
+    qapp.processEvents()
+    last = _messages(window)[-1]
+    assert last["role"] == "assistant" and "could not find" in last["content"]
+
+
+def test_summarize_model_failure_is_reported_not_hidden(window, qapp, tmp_path, monkeypatch):
+    doc = tmp_path / "a.txt"
+    doc.write_text("hello", encoding="utf-8")
+
+    def broken(*a, **k):
+        raise RuntimeError("Ollama is not running")
+
+    monkeypatch.setattr(window.command_engine.ai, "summarize_document", broken)
+    window.process_command(f"summarize {doc}")
+    window.document_worker.wait(10000)
+    qapp.processEvents()
+    last = _messages(window)[-1]["content"]
+    assert "could not summarise" in last and "Ollama is not running" in last
+    assert "ERROR" in window.assistant_status.text()
+
+
+def test_window_closes_cleanly_while_a_summary_is_running(qapp, tmp_path, monkeypatch):
+    import threading
+
+    from ui.main_window import MainWindow
+
+    doc = tmp_path / "a.txt"
+    doc.write_text("hello", encoding="utf-8")
+    release = threading.Event()
+    win = MainWindow()
+    monkeypatch.setattr(win.command_engine.ai, "summarize_document",
+                        lambda *a, **k: (release.wait(5) and "late", "m"))
+    win.process_command(f"summarize {doc}")
+    win.shutdown()          # must not hang or crash even though the worker is still busy
+    release.set()
+    win.close()
+
+
+# ------------------------------------------------------- microphone list is lazy and non-destructive
+def test_settings_page_does_not_query_audio_devices_while_building(qapp, settings, monkeypatch):
+    from core import stt
+    from ui.settings_page import SettingsPage
+
+    calls = []
+    monkeypatch.setattr(stt, "list_input_devices", lambda: calls.append(1) or [(2, "USB Mic")])
+    page = SettingsPage(settings)
+    assert calls == []            # nothing asked of the audio drivers during construction
+    page.show()
+    qapp.processEvents()
+    assert calls == [1] and page.microphone.findData(2) >= 0
+    page.close()
+
+
+def test_saving_settings_never_wipes_a_saved_microphone(qapp, settings, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from core import stt
+    from ui.settings_page import SettingsPage
+
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+    settings.microphone_device = 5
+    # 1) page saved without ever being shown -> stored device untouched
+    page = SettingsPage(settings)
+    page.save_settings()
+    assert settings.microphone_device == 5
+    # 2) shown while the device is unplugged -> still offered, still saved
+    monkeypatch.setattr(stt, "list_input_devices", lambda: [])
+    page2 = SettingsPage(settings)
+    page2.show()
+    qapp.processEvents()
+    assert page2.microphone.currentData() == 5
+    page2.save_settings()
+    assert settings.microphone_device == 5
+    page.close()
+    page2.close()
