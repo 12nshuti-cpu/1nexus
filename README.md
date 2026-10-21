@@ -51,7 +51,7 @@ py -3.12 -m venv .venv
   Setup commands are in [docs/INSTALL.md](docs/INSTALL.md).
 * **Online AI (optional):** a Gemini API key from Google AI Studio and an internet connection.
 * **Voice (optional):** a microphone. First use of speech recognition downloads a Whisper model
-  (about 145 MB) once. Kokoro voices are a separate optional install (about 2 GB, needs Python 3.10-3.12);
+  (about 145 MB) once. Kokoro voices are a separate optional install (large: roughly 1-2 GB, estimated; needs Python 3.10-3.12);
   see [docs/VOICE.md](docs/VOICE.md).
 
 ## Documentation

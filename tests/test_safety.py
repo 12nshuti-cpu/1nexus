@@ -162,3 +162,19 @@ def test_log_file_never_contains_secrets(tmp_path):
     assert "request failed" in text and "AIzaSy" not in text and "abcdefghijklmnop12345678" not in text
     for handler in list(logging.getLogger("nexus").handlers):
         handler.close()
+
+
+def test_no_download_and_execute_code_ships_in_the_app():
+    """NEXUS must never contain a pipe-a-download-into-a-shell helper (e.g. `irm <url> | iex`)."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    pattern = re.compile(r"\b(?:irm|iwr|Invoke-WebRequest|Invoke-RestMethod|curl|wget)\b[^\n]*\|\s*(?:iex|Invoke-Expression|sh|bash)\b", re.I)
+    offenders = [
+        str(path.relative_to(root))
+        for folder in ("core", "ui", "config", "database")
+        for path in (root / folder).rglob("*.py")
+        if pattern.search(path.read_text(encoding="utf-8", errors="ignore"))
+    ]
+    assert offenders == [], f"download-and-execute code found in: {offenders}"

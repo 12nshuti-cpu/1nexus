@@ -6,7 +6,7 @@
 ;  * The install folder holds only program files. Conversations, reminders, settings and logs
 ;    live in %LOCALAPPDATA%\NEXUS and are NOT removed by upgrades; the uninstaller asks first.
 ;  * The installer never changes Windows startup. That is a setting inside NEXUS the user turns on.
-;  * Natural voice (Kokoro) is an optional, unchecked step because it downloads about 2 GB.
+;  * Natural voice (Kokoro) is an optional, unchecked step because it is a large download (roughly 1-2 GB).
 
 #ifndef AppVersion
   #define AppVersion "0.5.0"
@@ -54,12 +54,12 @@ Source: "..\dist\NEXUS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 Name: "{autoprograms}\NEXUS"; Filename: "{app}\NEXUS.exe"
-Name: "{autoprograms}\NEXUS - install natural voice (Kokoro)"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\_internal\scripts\setup_kokoro.ps1"""; IconFilename: "{app}\NEXUS.exe"; Comment: "Optional: downloads about 2 GB. Needs Python 3.10-3.12."
+Name: "{autoprograms}\NEXUS - install natural voice (Kokoro)"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\_internal\scripts\setup_kokoro.ps1"""; IconFilename: "{app}\NEXUS.exe"; Comment: "Optional: large download (roughly 1-2 GB). Needs Python 3.10-3.12."
 Name: "{autodesktop}\NEXUS"; Filename: "{app}\NEXUS.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\NEXUS.exe"; Description: "Launch NEXUS"; Flags: nowait postinstall skipifsilent
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\_internal\scripts\setup_kokoro.ps1"""; Description: "Install natural voice (Kokoro) now - about 2 GB download, needs Python 3.10-3.12"; Flags: postinstall skipifsilent unchecked
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\_internal\scripts\setup_kokoro.ps1"""; Description: "Install natural voice (Kokoro) now - large download (roughly 1-2 GB), needs Python 3.10-3.12"; Flags: postinstall skipifsilent unchecked
 
 [Code]
 procedure StopHelper();

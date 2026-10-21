@@ -16,8 +16,6 @@ from models import BASE_MODEL, MODELFILE_PATH, NEXUS_MODEL
 class NexusDependencyManager:
     """Check local Ollama readiness without downloading software or model weights."""
 
-    OLLAMA_SETUP_SCRIPT = "https://ollama.com/install.ps1"
-
     def __init__(self, status_callback: Optional[Callable[[str], None]] = None):
         self.status_callback = status_callback
         self.ollama_process = None
@@ -83,59 +81,6 @@ class NexusDependencyManager:
             except OSError:
                 continue
         return None
-
-    def install_ollama(self) -> None:
-        if os.name != "nt":
-            raise RuntimeError("Automatic Ollama installation is currently implemented for Windows.")
-
-        powershell = (
-            Path(os.environ.get("SystemRoot", r"C:\Windows"))
-            / "System32"
-            / "WindowsPowerShell"
-            / "v1.0"
-            / "powershell.exe"
-        )
-        if not powershell.exists():
-            raise RuntimeError("Windows PowerShell could not be located.")
-
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        command = (
-            "$ErrorActionPreference='Stop'; "
-            f"irm '{self.OLLAMA_SETUP_SCRIPT}' | iex"
-        )
-        result = subprocess.run(
-            [
-                str(powershell),
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                command,
-            ],
-            check=False,
-            timeout=600,
-            creationflags=creation_flags,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError("Ollama installation failed" + (f": {detail[-700:]}" if detail else "."))
-
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            if self.find_ollama() is not None:
-                return
-            time.sleep(0.5)
-        raise RuntimeError("Ollama installation completed, but ollama.exe was not found.")
-
-    # ------------------------------------------------------------
-    # Service
-    # ------------------------------------------------------------
 
     def server_available(self) -> bool:
         try:
