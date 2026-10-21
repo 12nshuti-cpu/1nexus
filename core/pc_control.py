@@ -615,6 +615,23 @@ class PCController:
         )
         return any(re.match(pattern, text, re.I) for pattern in patterns)
 
+    _DELETE_FILE = re.compile(r"^(?:delete|remove)\s+(?:the\s+)?file\s+(.+)$", re.IGNORECASE)
+
+    def confirmation_prompt(self, command: str) -> str | None:
+        """Text to show the user when ``command`` is consequential and must be confirmed first.
+
+        Deleting a file is recoverable (Recycle Bin) but still needs a yes: a mis-heard voice
+        command or a typo must not remove anything on its own.
+        """
+        match = self._DELETE_FILE.match(str(command or "").strip())
+        if not match:
+            return None
+        try:
+            target = str(self._safe_user_path(match.group(1)))
+        except ValueError:
+            target = self._strip_file_command(match.group(1))
+        return f"NEXUS is about to move this file to the Recycle Bin:\n\n{target}\n\nContinue?"
+
     @staticmethod
     def _strip_file_command(value: str) -> str:
         value = str(value or "").strip()

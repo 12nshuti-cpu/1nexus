@@ -64,6 +64,10 @@ class CommandEngine:
             and self.shell.is_risky(command)
         )
 
+    def pc_confirmation_prompt(self, command):
+        """Question to ask before running a consequential PC action, or None."""
+        return self.pc.confirmation_prompt(command)
+
     def is_pc_command(self, command):
         """Return True when the command belongs to the local PC-control layer."""
         command_lower = str(command or "").strip().lower()

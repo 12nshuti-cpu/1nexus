@@ -5688,7 +5688,13 @@ class MainWindow(QMainWindow):
 
         if command_lower in local_commands or is_pc_command:
 
-            response = self.command_engine.execute(command)
+            question = self.command_engine.pc_confirmation_prompt(command)
+            if question and QMessageBox.question(
+                self, "Confirm file action", question, QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            ) != QMessageBox.Yes:
+                response = "Cancelled. Nothing was changed."
+            else:
+                response = self.command_engine.execute(command)
 
             if response == "__OPEN_NEXUS__":
                 self.activate_nexus()

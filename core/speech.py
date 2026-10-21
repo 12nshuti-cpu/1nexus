@@ -204,6 +204,20 @@ class KokoroHelper:
             raise KokoroError("The Kokoro helper stopped unexpectedly. See the NEXUS log for details.")
         return line
 
+    def _next_message(self, timeout: float) -> dict:
+        """Next JSON object from the worker. Stray non-JSON lines (library warnings) are skipped."""
+        deadline = time.monotonic() + timeout
+        while True:
+            line = self._next_line(max(0.05, deadline - time.monotonic()))
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                if time.monotonic() >= deadline:
+                    raise KokoroError("Kokoro did not answer in time.") from None
+                continue
+            if isinstance(message, dict):
+                return message
+
     def start(self) -> None:
         if self.running:
             return
@@ -232,10 +246,7 @@ class KokoroHelper:
         self._process = process
         threading.Thread(target=self._read_stdout, args=(process,), name="NEXUS-Kokoro-reader", daemon=True).start()
         try:
-            status = json.loads(self._next_line(self.startup_timeout))
-        except json.JSONDecodeError as error:
-            self.stop()
-            raise KokoroError("The Kokoro helper returned an invalid startup message.") from error
+            status = self._next_message(self.startup_timeout)
         except KokoroError:
             self.stop()
             raise
@@ -250,7 +261,7 @@ class KokoroHelper:
         try:
             process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
             process.stdin.flush()
-            reply = json.loads(self._next_line(self.request_timeout))
+            reply = self._next_message(self.request_timeout)
         except (OSError, ValueError, KokoroError) as error:
             self.stop()
             if isinstance(error, KokoroError):

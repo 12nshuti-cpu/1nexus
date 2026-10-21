@@ -12,16 +12,13 @@ pytest.importorskip("PySide6")
 
 
 @pytest.fixture()
-def window(qapp):
+def window(qapp, track):
     from ui.main_window import MainWindow
 
-    win = MainWindow()
+    win = track(MainWindow())
     win.show()
     qapp.processEvents()
-    yield win
-    win.shutdown()
-    win.close()
-    qapp.processEvents()
+    return win
 
 
 def test_main_window_starts_and_has_core_controls(window):
@@ -47,22 +44,21 @@ def test_main_window_defines_resize_handler_once():
     assert source.count("def resizeEvent(") == 1
 
 
-def test_main_window_shutdown_is_idempotent(qapp):
+def test_main_window_shutdown_is_idempotent(qapp, track):
     from ui.main_window import MainWindow
 
-    win = MainWindow()
+    win = track(MainWindow())
     win.shutdown()
     win.shutdown()  # a second call (e.g. aboutToQuit after closeEvent) must not raise
 
 
-def test_first_run_wizard_constructs(qapp, settings):
+def test_first_run_wizard_constructs(qapp, settings, track):
     from ui.first_run_wizard import FirstRunWizard
 
-    wizard = FirstRunWizard(settings)
+    wizard = track(FirstRunWizard(settings))
     wizard.show()
     qapp.processEvents()
     assert wizard.isVisible()
-    wizard.close()
 
 
 def test_settings_page_imports():
@@ -96,7 +92,7 @@ def test_selftest_flag_passes_in_a_fresh_process(tmp_path):
 
 
 # ------------------------------------------------------------------ voice input wiring
-def test_settings_page_saves_speech_input_choices(qapp, settings, monkeypatch):
+def test_settings_page_saves_speech_input_choices(qapp, settings, monkeypatch, track):
     from PySide6.QtWidgets import QMessageBox
 
     from ui.settings_page import SettingsPage
@@ -104,7 +100,7 @@ def test_settings_page_saves_speech_input_choices(qapp, settings, monkeypatch):
     shown = []  # save_settings ends with a modal "Settings saved" box, which would block headless
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown.append("WARNING: " + str(a[2:])))
-    page = SettingsPage(settings)
+    page = track(SettingsPage(settings))
     page.show()
     qapp.processEvents()
     page.stt_model.setCurrentIndex(page.stt_model.findData("small.en"))
@@ -112,7 +108,6 @@ def test_settings_page_saves_speech_input_choices(qapp, settings, monkeypatch):
     page.save_settings()
     assert settings.stt_model == "small.en" and settings.push_to_talk is True
     assert len(shown) == 1 and "have been saved" in shown[0]  # saved cleanly, no warning dialog
-    page.close()
 
 
 @pytest.mark.parametrize("engine,key,expected", [
@@ -252,7 +247,7 @@ def test_summarize_model_failure_is_reported_not_hidden(window, qapp, tmp_path, 
     assert "ERROR" in window.assistant_status.text()
 
 
-def test_window_closes_cleanly_while_a_summary_is_running(qapp, tmp_path, monkeypatch):
+def test_window_closes_cleanly_while_a_summary_is_running(qapp, tmp_path, monkeypatch, track):
     import threading
 
     from ui.main_window import MainWindow
@@ -260,31 +255,29 @@ def test_window_closes_cleanly_while_a_summary_is_running(qapp, tmp_path, monkey
     doc = tmp_path / "a.txt"
     doc.write_text("hello", encoding="utf-8")
     release = threading.Event()
-    win = MainWindow()
+    win = track(MainWindow())
     monkeypatch.setattr(win.command_engine.ai, "summarize_document",
                         lambda *a, **k: (release.wait(5) and "late", "m"))
     win.process_command(f"summarize {doc}")
     win.shutdown()          # must not hang or crash even though the worker is still busy
     release.set()
-    win.close()
 
 
 # ------------------------------------------------------- microphone list is lazy and non-destructive
-def test_settings_page_does_not_query_audio_devices_while_building(qapp, settings, monkeypatch):
+def test_settings_page_does_not_query_audio_devices_while_building(qapp, settings, monkeypatch, track):
     from core import stt
     from ui.settings_page import SettingsPage
 
     calls = []
     monkeypatch.setattr(stt, "list_input_devices", lambda: calls.append(1) or [(2, "USB Mic")])
-    page = SettingsPage(settings)
+    page = track(SettingsPage(settings))
     assert calls == []            # nothing asked of the audio drivers during construction
     page.show()
     qapp.processEvents()
     assert calls == [1] and page.microphone.findData(2) >= 0
-    page.close()
 
 
-def test_saving_settings_never_wipes_a_saved_microphone(qapp, settings, monkeypatch):
+def test_saving_settings_never_wipes_a_saved_microphone(qapp, settings, monkeypatch, track):
     from PySide6.QtWidgets import QMessageBox
 
     from core import stt
@@ -294,16 +287,14 @@ def test_saving_settings_never_wipes_a_saved_microphone(qapp, settings, monkeypa
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
     settings.microphone_device = 5
     # 1) page saved without ever being shown -> stored device untouched
-    page = SettingsPage(settings)
+    page = track(SettingsPage(settings))
     page.save_settings()
     assert settings.microphone_device == 5
     # 2) shown while the device is unplugged -> still offered, still saved
     monkeypatch.setattr(stt, "list_input_devices", lambda: [])
-    page2 = SettingsPage(settings)
+    page2 = track(SettingsPage(settings))
     page2.show()
     qapp.processEvents()
     assert page2.microphone.currentData() == 5
     page2.save_settings()
     assert settings.microphone_device == 5
-    page.close()
-    page2.close()

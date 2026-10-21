@@ -34,10 +34,51 @@ import pytest  # noqa: E402
 
 @pytest.fixture(scope="session")
 def qapp():
+    import gc
+
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     yield app
+    # Collect leftover wrappers while the QApplication still exists, so no widget is torn
+    # down after it at interpreter exit (that corrupts the heap and aborts the test run).
+    gc.collect()
+    app.processEvents()
+
+
+def destroy_widget(app, widget):
+    """Close and delete a Qt widget in the order Qt needs: before the QApplication goes away."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    for step in ("shutdown", "hide", "close", "deleteLater"):
+        method = getattr(widget, step, None)
+        if callable(method):
+            try:
+                method()
+            except Exception:  # noqa: BLE001 - teardown must not mask the real test result
+                pass
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+
+
+@pytest.fixture()
+def track(qapp):
+    """``track(widget)`` returns the widget and destroys it when the test ends."""
+    created = []
+
+    def register(widget):
+        created.append(widget)
+        return widget
+
+    yield register
+    for widget in reversed(created):
+        destroy_widget(qapp, widget)
+
+
+@pytest.fixture(autouse=True)
+def _private_data_folder(tmp_path, monkeypatch):
+    """Every test gets its own user-data folder, so one test's database can never leak into another."""
+    monkeypatch.setenv("NEXUS_DATA_DIR", str(tmp_path / "private-userdata"))
 
 
 @pytest.fixture()

@@ -1,75 +1,86 @@
-# NEXUS Settings + Windows Execution upgrade
+# NEXUS
 
-Update these files in the existing NEXUS project:
+NEXUS is a personal AI assistant for Windows. You talk to it by typing or by voice; it answers with a
+local model running on your PC (Ollama) or, if you choose, with Google Gemini online. It can set
+reminders, remember things you ask it to, do calculations and unit conversions, open apps, folders and
+websites, summarise text files, run Windows commands (with confirmation), and read its answers aloud.
 
-- `config/settings.py`
-- `core/commands.py`
-- `core/ai.py`
-- `core/shell_executor.py` (new)
-- `core/shell_worker.py` (new)
-- `core/voice.py`
-- `ui/settings_page.py` (new)
-- `ui/main_window.py`
+> **Project status (v0.5.0).** The source code is tested (see [docs/VERIFICATION.md](docs/VERIFICATION.md)),
+> but the Windows `.exe` and installer have **not been built or run yet**: they need a Windows machine.
+> The build scripts are included; follow [docs/RELEASE.md](docs/RELEASE.md) and the clean-machine
+> checklist there before giving the installer to anyone.
 
-## What changed
+## What you can do
 
-### Settings
-The existing Settings buttons now open a real Settings page. Settings are persisted in `%LOCALAPPDATA%\\NEXUS\\config\\settings.json`.
+| Area | What works |
+|---|---|
+| Chat | Text conversations, saved history, new/rename/delete conversations, streaming local answers |
+| AI engines | **Local** (Ollama, nothing leaves your PC) · **Online** (Gemini, needs a key) · **Automatic** (local by default, Gemini only for a few request types, and only if a key is set) |
+| Voice in | Microphone button → speech recognised **on your PC** with Whisper (Local/Automatic) or Gemini Live (Online). Click-to-stop or push-to-talk, choice of microphone, Esc cancels |
+| Voice out | Kokoro neural voice (optional install) with an automatic fallback to the Windows voice. You are told when the fallback is used |
+| Reminders | "remind me to call mum in 10 minutes"; list, edit, complete, delete; they survive restarts and fire while NEXUS is in the system tray |
+| Memory | "remember that my sister is Aline"; view, edit, delete, or turn personalisation off in **Privacy & data** |
+| Everyday tools | time/date, calculator ("calculate 15% of 80"), unit conversion ("convert 10 km to miles"), diagnostics |
+| PC control | open apps/folders/sites, window and keyboard shortcuts, file actions (deletes go to the Recycle Bin and ask first), Windows shell via `run <command>` (confirmation required) |
+| Documents | `summarize C:\path\notes.txt` or "summarize this document" (file picker). Plain-text formats only (no PDF/Word yet) |
+| Your data | Export everything as JSON, back up the database, delete conversations or memories. All stored locally |
 
-The page controls:
-- Ollama URL and NEXUS model
-- voice enabled/language/TTS configuration
-- Windows shell enable/disable
-- PowerShell vs Command Prompt default
-- shell confirmation behavior
-- command timeout
-- command working directory
-- Windows startup
+"Search for X" opens a Google search in your browser; NEXUS does not fetch and read web pages.
 
-### Windows execution
-NEXUS can execute real Windows commands through CMD or PowerShell.
+## Install
 
-Examples:
+**With the installer** (once you have built it, see [docs/RELEASE.md](docs/RELEASE.md)): run
+`NEXUS-Setup-<version>.exe`. It installs for the current Windows user, no administrator rights needed.
+The first launch shows a short setup wizard.
 
-```text
-ipconfig /all
-Get-Process
-powershell Get-Service
-cmd tasklist
-terminal whoami
-run command systeminfo
-execute Get-NetIPConfiguration
-```
-
-Explicit shell commands are confirmed by default. Disable confirmation in Settings only if you understand that direct shell execution can change the PC.
-
-Shell commands run in a background Qt worker so the NEXUS window remains responsive.
-
-### AI configuration
-`core/ai.py` now reloads the saved Ollama URL/model settings for each request, so changing the model in Settings does not require rewriting code.
-
-### Voice configuration
-`core/voice.py` keeps the fast realtime transcription model as its realtime path while allowing the saved STT fallback model, TTS model, and TTS voice to be configured from Settings.
-
-## Start
+**From source** (developers): see [docs/INSTALL.md](docs/INSTALL.md).
 
 ```powershell
-cd C:\Users\clari\Documents\NEXUS
-python app.py
+git clone https://github.com/12nshuti-cpu/1nexus
+cd 1nexus
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python app.py
 ```
 
-## Hybrid AI and privacy
+### Requirements
 
-NEXUS keeps its existing Ollama models (`nexus:latest` based on `llama3.1:8b`) as the local engine. Local text chat, configured local Windows tools, and system actions continue to work without an internet connection when Ollama and the model are installed. Startup only checks for them; it does not install Ollama, pull weights, or rebuild/replace the NEXUS model.
+* Windows 10 or 11, 64-bit. (The code is cross-platform Qt, but only Windows is a supported target.)
+* **Local AI:** [Ollama](https://ollama.com/download) plus the `llama3.1:8b` model (about 5 GB) and the
+  small `nexus` model built from `models/Modelfile`. 8 GB RAM is the practical minimum, 16 GB is comfortable.
+  Setup commands are in [docs/INSTALL.md](docs/INSTALL.md).
+* **Online AI (optional):** a Gemini API key from Google AI Studio and an internet connection.
+* **Voice (optional):** a microphone. First use of speech recognition downloads a Whisper model
+  (about 145 MB) once. Kokoro voices are a separate optional install (about 2 GB, needs Python 3.10-3.12);
+  see [docs/VOICE.md](docs/VOICE.md).
 
-In Settings, choose **Automatic**, **Online**, or **Local**:
+## Documentation
 
-- **Local** never sends prompts to Gemini.
-- **Automatic** keeps ordinary conversation and Windows/tool requests local; selected complex/current/research prompts use Gemini only when a key is configured. Gemini Live is used for microphone turns when available.
-- **Online** sends compatible text requests to Gemini. Windows/system requests remain local because Gemini cannot access NEXUS's local tools. If Gemini fails, the optional fallback setting can retry text locally and labels the answer.
+| | |
+|---|---|
+| [Installation](docs/INSTALL.md) | Installer, from source, Ollama and Gemini setup |
+| [Configuration](docs/CONFIGURATION.md) | Every setting, data locations, environment variables |
+| [Voice & Kokoro](docs/VOICE.md) | Speech in/out, push-to-talk, installing Kokoro |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Fixes for the problems people actually hit |
+| [Security & privacy](docs/SECURITY_PRIVACY.md) | What is stored, what leaves your PC, how commands are controlled |
+| [Release & packaging](docs/RELEASE.md) | Building the exe and installer, release checklist |
+| [Third-party licences](docs/THIRD_PARTY_LICENSES.md) | Dependency and model licences to review before distributing |
+| [Verification](docs/VERIFICATION.md) | What was tested, what could not be, known limitations |
 
-Gemini text and Live voice require internet access, the `google-genai` package (`python -m pip install -r requirements.txt`), and a key. The easiest setup is **Settings → Gemini API key → paste your key → Save key & use Gemini**. This selects Online mode and saves the key for your Windows user under `%LOCALAPPDATA%\NEXUS\gemini_api_key.txt`; alternatively, set `GEMINI_API_KEY` or `GOOGLE_API_KEY`. NEXUS does not display, log, or place the key in conversation history. Gemini usage may be quota-limited or billable according to the Google account/project; configure a key only if you intend to use the cloud route.
+## Develop
 
-Offline voice transcription is not currently available. If Gemini Live is unavailable, NEXUS reports that and directs you to type the request for local processing; it does not silently send microphone audio to a different provider. Cloud voice responses are generated and played by Gemini Live.
+```powershell
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest            # unit + headless UI tests; no paid services, no microphone needed
+.venv\Scripts\python app.py --selftest    # builds the real window headlessly and checks bundled files
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1   # exe + installer (Windows)
+```
 
-The older OpenAI wake-word/background voice and typed-response TTS paths are disabled unless **Allow legacy OpenAI background voice and TTS** is explicitly enabled in Settings and an OpenAI key is configured. This option may incur separate OpenAI quota or charges.
+Layout: `app.py` entry point · `ui/` Qt interface · `core/` engine (AI providers, speech, tools,
+reminders, memory, shell policy) · `config/` settings · `database/` SQLite · `scripts/` build and Kokoro
+setup · `installer/` Inno Setup script · `tests/`.
+
+## Licence
+
+No licence file has been chosen for this repository yet. Add one before publishing or distributing
+NEXUS; see [docs/THIRD_PARTY_LICENSES.md](docs/THIRD_PARTY_LICENSES.md) for what your dependencies require.
