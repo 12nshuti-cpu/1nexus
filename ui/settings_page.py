@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
@@ -24,6 +24,35 @@ from config.settings import NEXUSSettings
 from core import startup as startup_module
 from core.gemini_engine import gemini_is_configured, set_gemini_api_key
 from core.speech import ENGLISH_VOICES
+
+
+class _LabelToggle(QObject):
+    """Event filter that toggles a switch when its row label is clicked."""
+
+    _shared = None
+
+    def __init__(self):
+        super().__init__()
+        self.targets = {}
+
+    @classmethod
+    def instance(cls):
+        if cls._shared is None:
+            cls._shared = _LabelToggle()
+        return cls._shared
+
+    def watch(self, label, switch):
+        self.targets[label] = switch
+        label.installEventFilter(self)
+        label.destroyed.connect(lambda *_a, key=label: self.targets.pop(key, None))
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            target = self.targets.get(watched)
+            if target is not None and target.isEnabled():
+                target.toggle()
+                return True
+        return False
 
 
 class SettingsPage(QWidget):
@@ -60,6 +89,13 @@ class SettingsPage(QWidget):
 
     @staticmethod
     def _row(label: str, widget: QWidget, description: str = ""):
+        if isinstance(widget, QCheckBox) and widget.text():
+            # The row already names the setting; the switch keeps its wording for screen
+            # readers and as a tooltip instead of repeating it on screen.
+            detail = widget.text().replace("&&", "&")
+            widget.setAccessibleName(f"{label}: {detail}")
+            widget.setToolTip(detail)
+            widget.setText("")
         row = QFrame()
         row.setObjectName("settingsRow")
         layout = QVBoxLayout(row)
@@ -71,6 +107,10 @@ class SettingsPage(QWidget):
         text.setObjectName("rowTitle")
         text.setWordWrap(True)
         top.addWidget(text, 1)
+        if isinstance(widget, QCheckBox):
+            # Clicking the setting's name flips the switch, like a native settings page.
+            text.setCursor(Qt.PointingHandCursor)
+            _LabelToggle.instance().watch(text, widget)
         top.addStretch()
         top.addWidget(widget)
         layout.addLayout(top)

@@ -339,6 +339,7 @@ QListWidget#conversationList::item:hover {{ background: {p.surface_2}; }}
 QListWidget#conversationList::item:selected {{ background: {p.surface_3}; }}
 QLabel#conversationRowTitle {{ color: {p.text}; font-size: 13px; }}
 QLabel#conversationRowStamp {{ color: {p.text_3}; font-size: 11px; }}
+QLabel#historyGroup {{ color: {p.text_3}; font-size: 11px; font-weight: 600; padding: 10px 10px 2px 10px; }}
 QLineEdit#searchInput {{ background: {p.surface_2}; border: 1px solid {p.border}; border-radius: 9px; padding: 6px 10px 6px 30px; color: {p.text}; }}
 QLineEdit#searchInput:focus {{ border-color: {p.accent}; }}
 QLabel#engineDot[state="ok"] {{ color: {p.success}; }}
@@ -358,21 +359,25 @@ QPushButton#primaryButton:disabled, QPushButton#systemContinue:disabled {{ backg
 QPushButton#primaryButton:focus, QPushButton#newChatButton:focus {{ border: 2px solid {p.text}; }}
 QPushButton#secondaryButton, QPushButton#systemRetry, QPushButton#systemFix {{ background: {p.surface}; color: {p.text}; border: 1px solid {p.border_strong}; }}
 QPushButton#secondaryButton:hover, QPushButton#systemRetry:hover, QPushButton#systemFix:hover {{ background: {p.surface_2}; }}
+QPushButton#secondaryButton:focus, QPushButton#systemRetry:focus, QPushButton#dangerButton:focus {{ border: 1px solid {p.accent}; }}
 QPushButton#ghostButton {{ background: transparent; border: 1px solid transparent; color: {p.text_2}; padding: 6px 10px; }}
 QPushButton#ghostButton:hover {{ background: {p.surface_2}; color: {p.text}; }}
 QPushButton#ghostButton:focus {{ border-color: {p.accent}; }}
 QPushButton#linkButton {{ background: transparent; border: none; color: {p.accent_text}; padding: 2px 4px; font-weight: 600; }}
-QPushButton#linkButton:hover {{ text-decoration: underline; }}
+QPushButton#linkButton:hover, QPushButton#linkButton:focus {{ text-decoration: underline; }}
 QPushButton#dangerButton {{ background: {p.danger_soft}; color: {p.danger}; border: 1px solid {mix(p.surface, p.danger, 0.35)}; }}
 QPushButton#dangerButton:hover {{ background: {mix(p.surface, p.danger, 0.22)}; }}
 QPushButton#chip {{ background: {p.surface}; color: {p.text_2}; border: 1px solid {p.border}; border-radius: 16px; padding: 7px 14px; font-weight: 500; }}
 QPushButton#chip:hover {{ border-color: {p.accent}; color: {p.text}; background: {p.accent_softer}; }}
+QPushButton#chip:focus {{ border: 1px solid {p.accent}; color: {p.text}; background: {p.accent_soft}; }}
 QPushButton#segment {{ background: transparent; border: none; border-radius: 7px; color: {p.text_2}; padding: 6px 14px; }}
 QPushButton#segment:checked {{ background: {p.surface}; color: {p.text}; font-weight: 600; border: 1px solid {p.border_strong}; }}
 QPushButton#segment:hover:!checked {{ color: {p.text}; }}
+QPushButton#segment:focus {{ border: 1px solid {p.accent}; }}
 QFrame#segmented {{ background: {p.surface_2}; border: 1px solid {p.border}; border-radius: 9px; }}
 QPushButton#swatch {{ border-radius: 14px; min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; padding: 0; border: 2px solid transparent; }}
 QPushButton#swatch:checked {{ border: 2px solid {p.text}; }}
+QPushButton#swatch:focus {{ border: 2px solid {p.accent_text}; }}
 
 QToolButton#iconButton {{ background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 5px; }}
 QToolButton#iconButton:hover {{ background: {p.surface_2}; }}
@@ -409,7 +414,8 @@ QComboBox#compactCombo {{ background: transparent; border: 1px solid transparent
 QComboBox#compactCombo:hover {{ background: {p.surface_2}; }}
 QComboBox#compactCombo:focus {{ border-color: {p.accent}; }}
 
-QCheckBox {{ spacing: 10px; color: {p.text}; background: transparent; }}
+QCheckBox {{ spacing: 10px; color: {p.text}; background: transparent; border: 1px solid transparent; border-radius: 12px; padding: 1px; }}
+QCheckBox:focus {{ border: 1px solid {p.accent}; }}
 QCheckBox::indicator {{ width: 36px; height: 20px; }}
 QCheckBox::indicator:unchecked {{ image: url({img["switch_off"]}); }}
 QCheckBox::indicator:checked {{ image: url({img["switch_on"]}); }}

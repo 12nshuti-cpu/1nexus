@@ -8,6 +8,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt  # noqa: E402
+
 
 @pytest.fixture()
 def window(qapp, track):
@@ -281,3 +283,65 @@ def test_streamed_ai_reply_renders_live_and_is_kept(window, qapp, monkeypatch):
     assert window.assistant_output._live is None
     assert window.assistant_output.message_count() == 2
     assert "point 5" in window.assistant_output._widgets[-1].content
+
+
+# ------------------------------------------------------------------ design review follow-ups
+def test_chat_history_is_grouped_by_day_and_search_hides_empty_groups(window, qapp):
+    cm = window.conversation_manager
+    first = cm.create_conversation()
+    cm.update_title(first, "Holiday plans")
+    cm.add_message(first, "user", "Where should we go?")
+    second = cm.create_conversation()
+    cm.update_title(second, "Budget questions")
+    cm.add_message(second, "user", "How much can I save?")
+    window.refresh_conversation_list()
+    items = [window.conversation_list.item(i) for i in range(window.conversation_list.count())]
+    headers = [i for i in items if i.data(Qt.UserRole + 2) == "header"]
+    assert len(headers) == 1 and items[0] in headers            # one "Today" heading first
+    window.search_input.setText("holiday")
+    qapp.processEvents()
+    visible = [i.data(Qt.UserRole + 1) for i in items if not i.isHidden() and i.data(Qt.UserRole)]
+    assert visible == ["Holiday plans"] and not headers[0].isHidden()
+    window.search_input.setText("nothing matches this")
+    assert headers[0].isHidden()
+    window.search_input.clear()
+
+
+def test_settings_switches_have_one_label_that_toggles_them(qapp, settings, track):
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from ui.settings_page import SettingsPage
+
+    page = track(SettingsPage(settings))
+    switch = page.execution_enabled
+    assert switch.text() == "" and "shell command execution" in switch.toolTip().lower()
+    label = next(lbl for lbl in page.findChildren(QLabel) if lbl.text() == "Execution")
+    before = switch.isChecked()
+    for kind in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+        QApplication.sendEvent(label, QMouseEvent(kind, QPointF(2, 2), QPointF(2, 2), Qt.LeftButton,
+                                                  Qt.LeftButton, Qt.NoModifier))
+    assert switch.isChecked() is (not before)
+
+
+def test_app_icon_and_ico_file_come_from_the_same_mark(tmp_path, qapp):
+    from PySide6.QtGui import QIcon
+
+    from ui.brand import ICON_SIZES, app_icon, write_ico
+
+    icon = app_icon("#45d9ff")
+    assert not icon.isNull() and icon.availableSizes()
+    target = tmp_path / "nexus.ico"
+    write_ico(target)
+    loaded = QIcon(str(target))
+    assert {s.width() for s in loaded.availableSizes()} == set(ICON_SIZES)
+
+
+def test_home_orb_scales_with_window_height(window, qapp):
+    window.resize(1300, 900)
+    qapp.processEvents()
+    tall = window.dashboard_core_widget.width()
+    window.resize(1300, 600)
+    qapp.processEvents()
+    assert window.dashboard_core_widget.width() < tall

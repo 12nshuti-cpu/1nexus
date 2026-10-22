@@ -89,6 +89,7 @@ from ui.components import (
     repolish,
 )
 from ui.pages import ActivityPage, MemoryPage, PageHeader, RemindersPage, activity_icon, scroll_page
+from ui.brand import app_icon
 from ui.system_check_dialog import SystemCheckDialog
 from ui.settings_page import SettingsPage
 from ui.theme import ACCENT_PRESETS, DEFAULT_ACCENT, STATE_COLORS, current_palette, theme
@@ -293,6 +294,44 @@ class _SystemCheckBridge(QObject):
     finished = Signal(list, str)
 
 
+class _AIThreadBridge(QObject):
+    """Tells the UI thread that an AI request thread has finished."""
+
+    done = Signal(object)
+
+
+class _AIRequestThread:
+    """Runs an AIWorker on a daemon Python thread (QThread-like wait/quit/isRunning)."""
+
+    def __init__(self, worker, bridge, conversation_id):
+        self.worker = worker
+        self._bridge = bridge
+        self._conversation_id = conversation_id
+        self._thread = threading.Thread(target=self._run, name="NEXUS-AI", daemon=True)
+
+    def _run(self):
+        try:
+            self.worker.run()
+        finally:
+            try:
+                self._bridge.done.emit(self._conversation_id)
+            except RuntimeError:
+                pass  # the window is already gone
+
+    def start(self):
+        self._thread.start()
+
+    def isRunning(self):  # noqa: N802 - mirrors QThread
+        return self._thread.is_alive()
+
+    def quit(self):
+        """The request cannot be interrupted; shutdown() waits for it briefly instead."""
+
+    def wait(self, msecs=None):
+        self._thread.join(None if msecs is None else msecs / 1000.0)
+        return not self._thread.is_alive()
+
+
 class _TelemetryBridge(QObject):
     """Carries telemetry gathered on a worker thread back to the UI thread."""
 
@@ -430,6 +469,8 @@ class MainWindow(QMainWindow):
         self._telemetry_busy = False
         self._telemetry_thread = None
         self._static_thread = None
+        self._ai_thread_bridge = _AIThreadBridge(self)
+        self._ai_thread_bridge.done.connect(self._release_ai_request)
         self._telemetry_bridge = _TelemetryBridge(self)
         self._telemetry_bridge.ready.connect(self._apply_telemetry)
         self._telemetry_bridge.static_ready.connect(lambda _info: self._apply_static_system_info())
@@ -515,6 +556,7 @@ class MainWindow(QMainWindow):
 
     def set_tray(self, tray):
         self.tray = tray
+        self._refresh_app_icon()
 
     def request_quit(self):
         self._quitting = True
@@ -674,7 +716,7 @@ class MainWindow(QMainWindow):
         self.settings_page.insert_section(self.create_appearance_section(), 0)
         settings_wrapper = QWidget()
         settings_layout = QVBoxLayout(settings_wrapper)
-        settings_layout.setContentsMargins(36, 28, 36, 20)
+        settings_layout.setContentsMargins(40, 28, 40, 20)
         settings_layout.setSpacing(16)
         settings_layout.addWidget(PageHeader("Settings", "Appearance, AI engine, voice, privacy and how NEXUS runs on this PC."))
         settings_layout.addWidget(self.settings_page, 1)
@@ -693,6 +735,8 @@ class MainWindow(QMainWindow):
             self.page_stack.addWidget(widget)
 
         self.toast = Toast(root)
+        self._page_layouts = [settings_layout, self.system_root_layout,
+                              self.reminders_page.layout_, self.memory_page.layout_, self.activity_page.layout_]
 
         self.global_clock_timer = QTimer(self)
         self.global_clock_timer.timeout.connect(self.update_dashboard_clock)
@@ -706,6 +750,8 @@ class MainWindow(QMainWindow):
 
         self._install_shortcuts()
         self._apply_sidebar_mode()
+        self._refresh_app_icon()
+        self._apply_density()
         self.switch_page("home")
 
     def _install_shortcuts(self):
@@ -876,8 +922,15 @@ class MainWindow(QMainWindow):
         query = str(query or "").strip().lower()
         if not hasattr(self, "conversation_list"):
             return
+        header = None
+        header_has_rows = False
         for index in range(self.conversation_list.count()):
             item = self.conversation_list.item(index)
+            if item.data(Qt.UserRole + 2) == "header":
+                if header is not None:
+                    header.setHidden(not header_has_rows)
+                header, header_has_rows = item, False
+                continue
             cid = item.data(Qt.UserRole)
             match = True
             if query:
@@ -892,6 +945,9 @@ class MainWindow(QMainWindow):
                     pass
                 match = query in title or query in message_text
             item.setHidden(not match)
+            header_has_rows = header_has_rows or match
+        if header is not None:
+            header.setHidden(not header_has_rows)
 
     def open_first_search_result(self):
         query = self.search_input.text().strip() if hasattr(self, "search_input") else ""
@@ -899,7 +955,7 @@ class MainWindow(QMainWindow):
             return
         for index in range(self.conversation_list.count()):
             item = self.conversation_list.item(index)
-            if not item.isHidden():
+            if not item.isHidden() and item.data(Qt.UserRole) is not None:
                 self.load_conversation_from_item(item)
                 return
 
@@ -1179,8 +1235,20 @@ class MainWindow(QMainWindow):
         layout.addLayout(footer)
         theme().changed.connect(self._refresh_theme_button)
         theme().changed.connect(self._refresh_sidebar_icons)
+        theme().changed.connect(self._refresh_app_icon)
         self._refresh_theme_button()
         self._refresh_sidebar_icons()
+
+    def _refresh_app_icon(self, *_):
+        """Window, taskbar and tray use the same orb as the sidebar, in the current accent."""
+        icon = app_icon(current_palette().accent)
+        self.setWindowIcon(icon)
+        app = QApplication.instance()
+        if app is not None:
+            app.setWindowIcon(icon)
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            tray.setIcon(icon)
 
     def _refresh_sidebar_icons(self, *_):
         palette = current_palette()
@@ -1282,8 +1350,9 @@ class MainWindow(QMainWindow):
     def create_home_page(self):
         content = QWidget()
         root = QVBoxLayout(content)
-        root.setContentsMargins(40, 30, 40, 36)
+        root.setContentsMargins(40, 28, 40, 32)
         root.setSpacing(0)
+        self.home_root_layout = root
 
         top = QHBoxLayout()
         top.setSpacing(12)
@@ -1308,10 +1377,11 @@ class MainWindow(QMainWindow):
         self.dashboard_clock.hide()
 
         hero = QVBoxLayout()
-        hero.setContentsMargins(0, 18, 0, 0)
-        hero.setSpacing(6)
-        self.dashboard_core_widget = NexusOrb(240)
-        self.dashboard_core_widget.setFixedSize(240, 240)
+        hero.setContentsMargins(0, 4, 0, 0)
+        hero.setSpacing(4)
+        # Sized to the window in _apply_density(), so the cards below stay in view on laptops.
+        self.dashboard_core_widget = NexusOrb(140)
+        self.dashboard_core_widget.setFixedSize(200, 200)
         self.dashboard_core_widget.clicked.connect(self._orb_clicked)
         hero.addWidget(self.dashboard_core_widget, 0, Qt.AlignHCenter)
         self.orb_state_label = QLabel()
@@ -1323,7 +1393,7 @@ class MainWindow(QMainWindow):
         self.orb_caption_label.setAlignment(Qt.AlignCenter)
         self.orb_caption_label.setWordWrap(True)
         hero.addWidget(self.orb_caption_label)
-        hero.addSpacing(16)
+        hero.addSpacing(14)
 
         self.home_composer = Composer("Ask NEXUS anything…", show_language=False)
         self.home_composer.setMaximumWidth(740)
@@ -1344,7 +1414,7 @@ class MainWindow(QMainWindow):
         chips_holder = QWidget()
         chips_holder.setMaximumWidth(760)
         chips = FlowLayout(chips_holder, spacing=8)
-        for label, prompt in SUGGESTIONS:
+        for label, prompt in SUGGESTIONS[:4]:
             chip = QPushButton(label)
             chip.setObjectName("chip")
             chip.setCursor(Qt.PointingHandCursor)
@@ -1355,7 +1425,7 @@ class MainWindow(QMainWindow):
         hero.addLayout(self._centered(chips_holder))
         root.addLayout(hero)
 
-        root.addSpacing(30)
+        root.addSpacing(26)
         glance = QLabel("AT A GLANCE")
         glance.setObjectName("sectionLabel")
         root.addWidget(glance)
@@ -2445,8 +2515,9 @@ class MainWindow(QMainWindow):
         palette = current_palette()
         content = QWidget()
         root = QVBoxLayout(content)
-        root.setContentsMargins(36, 28, 36, 28)
+        root.setContentsMargins(40, 28, 40, 28)
         root.setSpacing(18)
+        self.system_root_layout = root
         header = PageHeader("System", "Live health of this PC, measured locally every two seconds.")
         root.addWidget(header)
 
@@ -3111,6 +3182,26 @@ class MainWindow(QMainWindow):
     def _format_record_time(value):
         return friendly_time(value) or "Local"
 
+    @staticmethod
+    def _history_group(value):
+        from datetime import datetime
+
+        from ui.components import parse_timestamp
+
+        stamp = parse_timestamp(value)
+        if stamp is None:
+            return "Earlier"
+        days = (datetime.now().date() - stamp.date()).days
+        if days <= 0:
+            return "Today"
+        if days == 1:
+            return "Yesterday"
+        if days < 7:
+            return "Previous 7 days"
+        if days < 31:
+            return "Previous 30 days"
+        return "Earlier"
+
     def refresh_conversation_list(self):
         if not hasattr(self, "conversation_list"):
             return
@@ -3119,10 +3210,26 @@ class MainWindow(QMainWindow):
         self.conversation_list.blockSignals(True)
         self.conversation_list.clear()
         selected_item = None
+        group = None
         for conversation in conversations:
             conversation_id = conversation.get("id")
             title = conversation.get("title", "New Conversation")
-            stamp = friendly_time(conversation.get("updated_at") or conversation.get("created_at"), with_time=False)
+            updated = conversation.get("updated_at") or conversation.get("created_at")
+            # Rows are grouped under date headings (Today, Yesterday…), so each row only
+            # needs a time when it is from today.
+            heading = self._history_group(updated)
+            if heading != group:
+                group = heading
+                header = QListWidgetItem()
+                header.setFlags(Qt.NoItemFlags)
+                header.setData(Qt.UserRole, None)
+                header.setData(Qt.UserRole + 2, "header")
+                header.setSizeHint(QSize(0, 30))
+                self.conversation_list.addItem(header)
+                label = QLabel(heading.upper())
+                label.setObjectName("historyGroup")
+                self.conversation_list.setItemWidget(header, label)
+            stamp = friendly_time(updated) if heading == "Today" else ""
             item = QListWidgetItem()
             # The row widget is the only place where the title is rendered.
             # Keep BOTH DisplayRole and normal item text empty so QListWidget's
@@ -3132,7 +3239,7 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, conversation_id)
             item.setData(Qt.UserRole + 1, str(title))
             item.setData(Qt.AccessibleTextRole, str(title))
-            item.setToolTip(str(title))
+            item.setToolTip(f"{title}\nLast active {friendly_time(updated) or 'earlier'}")
             item.setSizeHint(QSize(0, 38))
             self.conversation_list.addItem(item)
             self.conversation_list.setItemWidget(
@@ -3369,8 +3476,6 @@ class MainWindow(QMainWindow):
 
         self.ai_voice_languages[conversation_id] = response_language
 
-        thread = QThread()
-
         worker = AIWorker(
             self.command_engine.ai,
             conversation_id,
@@ -3380,24 +3485,15 @@ class MainWindow(QMainWindow):
             speech_language=response_language,
         )
 
-        worker.moveToThread(thread)
-
-        thread.started.connect(worker.run)
-
         worker.chunk.connect(self.handle_ai_stream_chunk)
         worker.speech_chunk.connect(self.handle_ai_speech_chunk)
-
         worker.finished.connect(self.handle_ai_response)
-
         worker.error.connect(self.handle_ai_error)
 
-        worker.finished.connect(thread.quit)
-
-        worker.error.connect(thread.quit)
-
-        thread.finished.connect(worker.deleteLater)
-
-        thread.finished.connect(self.cleanup_ai_worker)
+        # A plain Python thread runs the request; the worker's signals still arrive on the
+        # UI thread (queued). This replaced a parentless QThread whose teardown raced with
+        # the window and could crash NEXUS just after an answer finished.
+        thread = _AIRequestThread(worker, self._ai_thread_bridge, conversation_id)
 
         self.ai_threads[conversation_id] = thread
 
@@ -3636,43 +3732,16 @@ class MainWindow(QMainWindow):
     # CLEANUP AI WORKER
     # ========================================================
 
-    def cleanup_ai_worker(
-        self,
-    ):
-
-        sender = self.sender()
-
-        if sender is None:
-            return
-
-        conversation_id = None
-
-        for (
-            cid,
-            thread,
-        ) in list(self.ai_threads.items()):
-
-            if thread is sender:
-                conversation_id = cid
-                break
-
-        if conversation_id is None:
-            return
-
-        thread = self.ai_threads.pop(
-            conversation_id,
-            None,
-        )
-
-        self.ai_workers.pop(
-            conversation_id,
-            None,
-        )
-
-        if thread:
-            thread.deleteLater()
-
+    def _release_ai_request(self, conversation_id):
+        """Forget a finished AI request once its thread has ended."""
+        thread = self.ai_threads.pop(conversation_id, None)
+        self.ai_workers.pop(conversation_id, None)
+        if thread is not None:
+            thread.wait(1000)
         self.refresh_conversation_list()
+
+    def cleanup_ai_worker(self):
+        """Kept for compatibility; AI requests are released by _release_ai_request."""
 
     # ========================================================
     # ACTIVITY
@@ -3724,6 +3793,8 @@ class MainWindow(QMainWindow):
             return
 
         conversation_id = item.data(Qt.UserRole)
+        if conversation_id is None:  # a date heading, not a conversation
+            return
 
         menu = QMenu(self)
 
@@ -3814,10 +3885,32 @@ class MainWindow(QMainWindow):
         self.refresh_conversation_list()
         self.show_toast("Conversation deleted.")
 
+    def _apply_density(self):
+        """Tighter margins on small windows, and an orb sized to the available height."""
+        if not hasattr(self, "page_stack"):
+            return
+        # Use the window size: child layouts have not caught up yet during a resize.
+        sidebar = self.sidebar.width() if hasattr(self, "sidebar") else 0
+        width, height = self.width() - sidebar, self.height()
+        side = 20 if width < 720 else 28 if width < 1000 else 40
+        top = 18 if height < 640 else 28
+        if hasattr(self, "home_root_layout"):
+            self.home_root_layout.setContentsMargins(side, top, side, 28)
+        for layout in getattr(self, "_page_layouts", []):
+            layout.setContentsMargins(side, top, side, 24)
+        orb = max(120, min(220, int(height * 0.22)))
+        if self.dashboard_core_widget.width() != orb:
+            self.dashboard_core_widget.setFixedSize(orb, orb)
+        self.orb_caption_label.setVisible(height >= 600)
+        badge = getattr(self, "assistant_model_badge", None)
+        if badge is not None:
+            badge.setVisible(width >= 900)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "sidebar") and self._sidebar_collapsed is not None:
             self._apply_sidebar_mode()
+        self._apply_density()
         central_widget = self.centralWidget()
         if central_widget is not None and getattr(self, "system_check_overlay", None) is not None:
             self.system_check_overlay.setGeometry(central_widget.rect())

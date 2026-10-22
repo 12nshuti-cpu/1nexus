@@ -40,6 +40,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFrame,
     QGraphicsOpacityEffect,
@@ -521,19 +522,10 @@ class OrbMark(QWidget):
         theme().changed.connect(self._theme_repaint)
 
     def paintEvent(self, event):  # noqa: ARG002
-        p = current_palette()
+        from ui.brand import paint_mark
+
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        s = min(self.width(), self.height())
-        c = QPointF(self.width() / 2, self.height() / 2)
-        r = s * 0.46
-        gradient = QRadialGradient(c, r * 1.2, QPointF(c.x() - r * 0.35, c.y() - r * 0.45))
-        gradient.setColorAt(0.0, QColor(mix(p.accent, "#ffffff", 0.6)))
-        gradient.setColorAt(0.45, QColor(p.accent))
-        gradient.setColorAt(1.0, QColor(mix("#8b7bff", "#05070c", 0.2)))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(gradient)
-        painter.drawEllipse(c, r, r)
+        paint_mark(painter, QRectF(self.rect()), current_palette().accent)
         painter.end()
 
 
@@ -887,6 +879,20 @@ def markdown_to_html(text: str) -> str:
 
 
 # ============================================================================= chat
+_SOURCE_TAG = re.compile(r"^\s*\[(LOCAL|GEMINI[^:\]]*)(?::\s*([^\]]*))?\]\s*", re.I)
+
+
+def split_source(text: str) -> tuple[str, str]:
+    """Separate the engine tag NEXUS puts at the start of answers ("[LOCAL: nexus]")."""
+    match = _SOURCE_TAG.match(str(text or ""))
+    if not match:
+        return "", str(text or "")
+    kind = match.group(1).strip().lower()
+    detail = (match.group(2) or "").strip()
+    label = ("On this PC" if kind == "local" else "Gemini" if kind == "gemini" else match.group(1).strip().title())
+    return (f"{label} · {detail}" if detail else label), str(text)[match.end():]
+
+
 ERROR_PREFIXES = ("Nexus could not complete", "NEXUS could not complete", "Windows command execution failed")
 
 
@@ -938,7 +944,8 @@ class MessageWidget(QWidget):
         self.setObjectName("transparent")
         self.setAttribute(Qt.WA_StyledBackground, True)
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 6, 0, 6)
+        # A little more air before a new question than between a question and its answer.
+        outer.setContentsMargins(0, 10 if role == "user" else 4, 0, 2)
         outer.setSpacing(12)
         if role == "user":
             outer.addStretch(1)
@@ -1009,13 +1016,23 @@ class MessageWidget(QWidget):
         actions.setContentsMargins(0, 2, 0, 0)
         actions.setSpacing(2)
         copy = IconButton("copy", "Copy response", size=28, icon_size=15, role="faint")
-        copy.clicked.connect(lambda: self.copyRequested.emit(self.content))
+        copy.clicked.connect(lambda: self.copyRequested.emit(split_source(self.content)[1]))
         actions.addWidget(copy)
         speak = IconButton("volume", "Read aloud", size=28, icon_size=15, role="faint")
-        speak.clicked.connect(lambda: self.speakRequested.emit(self.content))
+        speak.clicked.connect(lambda: self.speakRequested.emit(split_source(self.content)[1]))
         actions.addWidget(speak)
         actions.addStretch(1)
         self.actions.setVisible(not streaming)
+        # Copy / read-aloud stay out of the way until the message is hovered or a button
+        # gets keyboard focus; the space is kept so nothing shifts when they appear.
+        self._actions_effect = QGraphicsOpacityEffect(self.actions)
+        self._actions_effect.setOpacity(0.0)
+        self.actions.setGraphicsEffect(self._actions_effect)
+        self._pinned = False
+        for button in (copy, speak):
+            # Reachable with Tab, but clicking them must not pull focus out of the message box.
+            button.setFocusPolicy(Qt.TabFocus)
+            button.installEventFilter(self)
         column.addWidget(self.actions)
         outer.addLayout(column, 1)
         self.set_content(self.content)
@@ -1027,8 +1044,36 @@ class MessageWidget(QWidget):
         else:
             # No trailing "cursor" glyph while streaming: Qt's text layout has crashed when a
             # block-element character (needing font fallback) ends text that changes rapidly.
-            # The header says "writing…" instead.
-            self.label.setText(markdown_to_html(self.content))
+            # The header says "writing…" instead. The engine tag moves into the header too.
+            source, body = split_source(self.content)
+            if source and hasattr(self, "meta") and not self.streaming:
+                stamp = self.meta.text().split("  ·  ")[0]
+                self.meta.setText(f"{stamp}  ·  {source}")
+            self.label.setText(markdown_to_html(body))
+
+    def set_actions_pinned(self, pinned: bool):
+        """The newest reply keeps its actions visible."""
+        if self.role == "user" or not hasattr(self, "_actions_effect"):
+            return
+        self._pinned = pinned
+        self._actions_effect.setOpacity(1.0 if pinned else 0.0)
+
+    def enterEvent(self, event):
+        if hasattr(self, "_actions_effect"):
+            self._actions_effect.setOpacity(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if hasattr(self, "_actions_effect") and not self._pinned:
+            self._actions_effect.setOpacity(0.0)
+        super().leaveEvent(event)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.FocusIn:
+            self._actions_effect.setOpacity(1.0)
+        elif event.type() == QEvent.FocusOut and not self._pinned and not self.underMouse():
+            self._actions_effect.setOpacity(0.0)
+        return super().eventFilter(watched, event)
 
     def set_bubble_width(self, width: int):
         if self.role != "user":
@@ -1155,18 +1200,13 @@ class ChatView(QScrollArea):
             force_scroll = True
         else:
             start = len(self._keys)
+        if self._live is not None and not live_text and len(messages) > len(self._keys):
+            # The streamed reply has been saved: retire the live widget *before* the saved
+            # message is added. (Re-using it for the final text crashed Qt's text layout.)
+            self._remove_live()
         for message in messages[start:]:
             role, content = str(message.get("role")), str(message.get("content", ""))
-            stamp = friendly_time(message.get("created_at"))
-            if self._live is not None and role == "assistant" and not live_text and not content.startswith(ERROR_PREFIXES):
-                # The streamed reply has been saved: keep the same widget instead of replacing it.
-                widget, self._live = self._live, None
-                widget.meta.setText(stamp)
-                widget.content = content
-                widget.finish_streaming()
-                self._widgets.append(widget)
-                continue
-            self._insert(MessageWidget(role, content, stamp))
+            self._insert(MessageWidget(role, content, friendly_time(message.get("created_at"))))
         self._keys = keys
 
         if live_text:
@@ -1179,6 +1219,9 @@ class ChatView(QScrollArea):
         elif self._live is not None:
             self._remove_live()
 
+        assistant = [w for w in self._widgets if w.role == "assistant"]
+        for widget in assistant:
+            widget.set_actions_pinned(widget is assistant[-1] and self._live is None)
         self.typing.setVisible(bool(thinking and not live_text))
         self.empty.setVisible(not messages and not live_text and not thinking)
         self._resize_bubbles()
@@ -1212,6 +1255,11 @@ class ChatView(QScrollArea):
         self.layout_.insertWidget(index, widget)
 
     def _discard(self, widget):
+        # Never delete the widget that holds keyboard focus: Qt would hand focus around the
+        # transcript while it is being rebuilt. Park focus on the transcript first.
+        focused = QApplication.focusWidget()
+        if focused is not None and (focused is widget or widget.isAncestorOf(focused)):
+            self.setFocus(Qt.OtherFocusReason)
         # Keep the parent until Qt deletes the widget from the event loop. Re-parenting to
         # None would hand ownership to Python and destroy it immediately, mid-update.
         widget.hide()

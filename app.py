@@ -293,7 +293,13 @@ def main():
     nexus_theme().apply(app, mode=str(settings_for_theme.get("ui_theme", "dark") or "dark"),
                         accent=str(settings_for_theme.get("ui_accent", "#45d9ff") or "#45d9ff"))
 
-    nexus_icon = QIcon(str(resource_path("assets/nexus.ico")))
+    # The same orb as the sidebar logo, in the user's accent colour (assets/nexus.ico, made
+    # from the same drawing, is used for the .exe and the installer).
+    from ui.brand import app_icon
+
+    nexus_icon = app_icon(str(settings_for_theme.get("ui_accent", "#45d9ff") or "#45d9ff"))
+    if nexus_icon.isNull():
+        nexus_icon = QIcon(str(resource_path("assets/nexus.ico")))
     app.setWindowIcon(nexus_icon)
 
     settings = NEXUSSettings()
