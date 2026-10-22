@@ -36,7 +36,7 @@ def test_ordinary_questions_still_go_to_the_ai(text):
 # ------------------------------------------------------------------ reading
 def test_reads_a_text_file(tmp_path):
     f = tmp_path / "a.txt"
-    f.write_text("Hello\r\nworld", encoding="utf-8")
+    f.write_bytes(b"Hello\r\nworld")
     d = read_document(f)
     assert d.name == "a.txt" and d.text == "Hello\nworld" and not d.truncated
 
