@@ -21,11 +21,12 @@ The data folder can be moved with `NEXUS_DATA_DIR`. No keys, usernames or machin
 | Local engine (Ollama) | nowhere (localhost) | Always, in Local mode |
 | Gemini online / Automatic with key | Google | Your message and recent context for that turn, when the mode routes it there |
 | Gemini Live voice | Google | Microphone audio while listening, in Online/Automatic-with-key voice |
+| Natural voice (speech output) | Microsoft (the Edge Read Aloud service) | The text of each reply NEXUS speaks aloud, when speech output is on and the engine is Automatic or Natural voice. Choose Kokoro or Windows voice to keep it local |
 | Whisper / Kokoro model download | Hugging Face | Once, when you first use that feature |
 | "Search for X", open website | Your browser | You see the page open |
 | Legacy OpenAI background voice, wake word | OpenAI | Only if you opt in in Settings |
 
-**Local mode is the only mode where nothing can leave the computer.** Document summaries follow the active
+**Local mode, with speech output off or set to Kokoro or Windows voice, is the only setup where nothing can leave the computer.** Document summaries follow the active
 engine, so in Local mode they stay local; in Online mode the file text is sent to Gemini.
 
 NEXUS has no analytics or telemetry.

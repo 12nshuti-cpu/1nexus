@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from config.settings import NEXUSSettings
 from core import startup as startup_module
 from core.gemini_engine import gemini_is_configured, set_gemini_api_key
-from core.speech import ENGLISH_VOICES
+from core.speech import ENGLISH_VOICES, NATURAL_ENGLISH_VOICES
 
 
 class _LabelToggle(QObject):
@@ -363,16 +363,28 @@ class SettingsPage(QWidget):
         # Speech output engine
         section, layout = self._section(
             "Speech output",
-            "NEXUS speaks with Kokoro when it is installed and falls back to the Windows voice if it is not or if it fails. "
-            "You are told when the fallback voice is used.",
+            "Automatic uses the natural voice when you are online, Kokoro if it is installed, and the Windows voice "
+            "otherwise. You are told whenever NEXUS has to switch voices.",
         )
         self.tts_engine = QComboBox()
-        self.tts_engine.addItem("Automatic (Kokoro, then Windows voice)", "auto")
+        self.tts_engine.addItem("Automatic (natural voice, then Kokoro, then Windows voice)", "auto")
+        self.tts_engine.addItem("Natural voice only (online)", "natural")
         self.tts_engine.addItem("Kokoro only", "kokoro")
         self.tts_engine.addItem("Windows voice only", "windows")
         self.tts_engine.setMinimumWidth(260)
         layout.addWidget(self._row("Speech engine", self.tts_engine,
-                                   "Kokoro is installed separately (see the Voice guide); it runs in its own helper process."))
+                                   "The natural voice is Microsoft's neural voice: it needs the internet and sends the text "
+                                   "being spoken to Microsoft. Kokoro runs on this PC and is installed separately (see the Voice guide)."))
+        self.natural_voice = QComboBox()
+        for voice, label in NATURAL_ENGLISH_VOICES:
+            self.natural_voice.addItem(label, voice)
+        self.natural_voice.setMinimumWidth(220)
+        layout.addWidget(self._row("Natural voice", self.natural_voice,
+                                   "Used for English replies; other languages get a native speaker."))
+        self.reveal_text = QCheckBox("Show spoken replies word by word as they are said")
+        layout.addWidget(self._row("Words follow the voice", self.reveal_text,
+                                   "On: a spoken reply appears word by word as NEXUS says it. "
+                                   "Off: the whole reply appears at once and is then spoken."))
         self.kokoro_voice = QComboBox()
         for voice in ENGLISH_VOICES:
             self.kokoro_voice.addItem(voice, voice)
@@ -526,6 +538,10 @@ class SettingsPage(QWidget):
         engine_index = self.tts_engine.findData(self.settings.tts_engine)
         if engine_index >= 0:
             self.tts_engine.setCurrentIndex(engine_index)
+        natural_pick = self.natural_voice.findData(self.settings.natural_voice)
+        if natural_pick >= 0:
+            self.natural_voice.setCurrentIndex(natural_pick)
+        self.reveal_text.setChecked(self.settings.reveal_text_with_voice)
         voice_pick = self.kokoro_voice.findData(self.settings.kokoro_voice)
         if voice_pick >= 0:
             self.kokoro_voice.setCurrentIndex(voice_pick)
@@ -612,6 +628,8 @@ class SettingsPage(QWidget):
         self.settings.start_with_windows = self.startup_enabled.isChecked()
 
         self.settings.tts_engine = self.tts_engine.currentData() or "auto"
+        self.settings.natural_voice = self.natural_voice.currentData() or ""
+        self.settings.reveal_text_with_voice = self.reveal_text.isChecked()
         self.settings.kokoro_voice = self.kokoro_voice.currentData() or "af_heart"
         self.settings.kokoro_speed = self.kokoro_speed.value()
         if self._microphones_loaded:  # otherwise the page never listed devices; keep the stored choice

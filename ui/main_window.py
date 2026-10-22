@@ -436,6 +436,11 @@ class MainWindow(QMainWindow):
         self.response_started_at = {}
         self._thinking_active = False
         self.streaming_ai_responses = {}
+        # Spoken replies shown word by word as the voice says them:
+        # conversation id -> {"tag": speech tag, "final": saved reply text or None while generating}
+        self.voice_reveals = {}
+        self._reveal_serial = 0
+        self._revealed_length = -1
 
         self.voice_speech_thread = None
         self.voice_speech_worker = None
@@ -573,7 +578,7 @@ class MainWindow(QMainWindow):
                 except Exception:  # noqa: BLE001
                     pass
         for name in ("monitor_timer", "speech_watch_timer", "thinking_timer", "global_clock_timer",
-                     "home_refresh_timer"):
+                     "home_refresh_timer", "reveal_timer"):
             timer = getattr(self, name, None)
             if timer is not None:
                 try:
@@ -631,6 +636,11 @@ class MainWindow(QMainWindow):
         self.speech_watch_timer.setInterval(500)
         self.speech_watch_timer.timeout.connect(self._poll_speech)
         self.speech_watch_timer.start()
+
+        self.reveal_timer = QTimer(self)
+        self.reveal_timer.setInterval(60)
+        self.reveal_timer.timeout.connect(self._advance_voice_reveals)
+        QTimer.singleShot(1500, self._warm_up_voice)
 
         if self.settings.startup_greeting:
             QTimer.singleShot(2500, self.show_startup_greeting)
@@ -2088,23 +2098,95 @@ class MainWindow(QMainWindow):
             VoiceService._active_kokoro_queue = self.kokoro_speech_queue
         return self.kokoro_speech_queue
 
-    def speak_response(self, response, language=None):  # noqa: F811
-        """Speak a response with the configured local engine (Kokoro / Windows voice)."""
+    def speak_response(self, response, language=None, tag=None):  # noqa: F811
+        """Speak a response (natural voice / Kokoro / Windows voice). Returns True if it was queued.
+
+        ``tag`` links the speech to a word-by-word reveal (see :meth:`begin_voice_reveal`).
+        """
         if not response or not self.voice_enabled:
-            return
+            return False
 
         if self.settings.legacy_openai_voice_enabled:
             self._speak_response_legacy_openai(response, language)
-            return
+            return True
 
         manager = self._ensure_speech_manager()
-        if manager.enqueue(response, language or self.current_voice_language or "auto"):
+        if manager.enqueue(response, language or self.current_voice_language or "auto", tag=tag):
             self.voice_output_active = True
             self.set_core_state("speaking")
             if hasattr(self, "assistant_status"):
                 self.assistant_status.setText("● SPEAKING")
-        else:
-            self.add_activity(f"Voice output unavailable: {manager.last_error}")
+            return True
+        self.add_activity(f"Voice output unavailable: {manager.last_error}")
+        return False
+
+    def _warm_up_voice(self):
+        """Load the natural voice's libraries in the background so the first reply starts sooner."""
+        import threading
+
+        from core.speech import NaturalVoice
+
+        threading.Thread(target=NaturalVoice().warm_up, name="NEXUS-Voice-warmup", daemon=True).start()
+
+    # ---------------------------------------------------------------- spoken-reply reveal
+    def _reveal_enabled(self):
+        return bool(
+            self.voice_enabled
+            and self.settings.reveal_text_with_voice
+            and not self.settings.legacy_openai_voice_enabled
+        )
+
+    def begin_voice_reveal(self, conversation_id):
+        """Hold a reply back and show it word by word as it is spoken. Returns its speech tag."""
+        self.end_voice_reveal(conversation_id)
+        if not self._reveal_enabled():
+            return None
+        self._reveal_serial += 1
+        tag = f"reply-{self._reveal_serial}"
+        self.voice_reveals[conversation_id] = {"tag": tag, "final": None}
+        self._revealed_length = -1
+        self.reveal_timer.start()
+        return tag
+
+    def voice_reveal_tag(self, conversation_id):
+        reveal = self.voice_reveals.get(conversation_id)
+        return reveal["tag"] if reveal else None
+
+    def end_voice_reveal(self, conversation_id):
+        """Show the whole reply now (speech finished, failed, or was stopped)."""
+        reveal = self.voice_reveals.pop(conversation_id, None)
+        if reveal is None:
+            return
+        if self.kokoro_speech_queue is not None:
+            self.kokoro_speech_queue.forget(reveal["tag"])
+        if not self.voice_reveals:
+            self.reveal_timer.stop()
+        if conversation_id == self.current_conversation_id:
+            self.render_current_conversation()
+
+    def end_voice_reveals(self):
+        for conversation_id in list(self.voice_reveals):
+            self.end_voice_reveal(conversation_id)
+
+    def _advance_voice_reveals(self):
+        manager = self.kokoro_speech_queue
+        for conversation_id, reveal in list(self.voice_reveals.items()):
+            if reveal["final"] is not None and (manager is None or not manager.is_speaking(reveal["tag"])):
+                self.end_voice_reveal(conversation_id)
+        reveal = self.voice_reveals.get(self.current_conversation_id)
+        if reveal is None:
+            return
+        live_text = self.streaming_ai_responses.get(self.current_conversation_id, "")
+        if len(self._revealed_text(reveal, live_text)) != self._revealed_length:
+            self.render_current_conversation()  # only when the voice has reached a new word
+
+    def _revealed_text(self, reveal, live_text):
+        from core.speech import reveal_prefix
+
+        manager = self.kokoro_speech_queue
+        source = reveal["final"] if reveal["final"] is not None else live_text
+        words = manager.spoken_words(reveal["tag"]) if manager is not None else 0
+        return reveal_prefix(source, words)
 
     def _poll_speech(self):
         """Report engine changes/failures and detect when speech has finished."""
@@ -2199,6 +2281,7 @@ class MainWindow(QMainWindow):
             return False
         self.voice_output_interrupted = True
         self.voice_output_active = False
+        self.end_voice_reveals()
         self.set_core_idle_state(voice_output_finished=True)
         self.add_activity("NEXUS voice playback interrupted by the user.")
         return True
@@ -3321,6 +3404,7 @@ class MainWindow(QMainWindow):
         self.set_core_state("thinking")
 
         conversation_id = self.ensure_conversation()
+        self.end_voice_reveal(conversation_id)  # a new question shows the previous answer in full
 
         response_language = self.pending_voice_language
         self.pending_voice_language = "auto"
@@ -3429,6 +3513,10 @@ class MainWindow(QMainWindow):
                 response,
             )
 
+            tag = self.begin_voice_reveal(conversation_id)
+            if tag is not None:
+                self.voice_reveals[conversation_id]["final"] = response
+
             self.display_user_and_response(
                 command,
                 response,
@@ -3437,11 +3525,14 @@ class MainWindow(QMainWindow):
             self.add_activity(response)
             self.set_core_idle_state()
 
+            spoken = False
             if self.voice_enabled:
                 try:
-                    self.speak_response(response, response_language)
+                    spoken = self.speak_response(response, response_language, tag=tag)
                 except Exception as error:  # noqa: BLE001
                     self.add_activity(f"Voice output error: {error}")
+            if not spoken:
+                self.end_voice_reveal(conversation_id)
 
             return
 
@@ -3475,6 +3566,7 @@ class MainWindow(QMainWindow):
         self.start_thinking_indicator(safe_command)
 
         self.ai_voice_languages[conversation_id] = response_language
+        self.begin_voice_reveal(conversation_id)
 
         worker = AIWorker(
             self.command_engine.ai,
@@ -3515,8 +3607,18 @@ class MainWindow(QMainWindow):
             except Exception:
                 messages = []
         live_text = self.streaming_ai_responses.get(self.current_conversation_id, "")
+        thinking = self._thinking_active
+        stamp = "writing…"
+        reveal = self.voice_reveals.get(self.current_conversation_id)
+        if reveal is not None:
+            if reveal["final"] is not None and messages and messages[-1].get("role") == "assistant":
+                messages = messages[:-1]  # saved already, but shown only as far as the voice has got
+            live_text = self._revealed_text(reveal, live_text)
+            thinking = thinking or not live_text
+            stamp = "speaking…"
+            self._revealed_length = len(live_text)
         self.assistant_output.show_conversation(
-            self.current_conversation_id, messages, live_text, self._thinking_active
+            self.current_conversation_id, messages, live_text, thinking, live_stamp=stamp
         )
         self.refresh_assistant_metrics()
 
@@ -3564,15 +3666,18 @@ class MainWindow(QMainWindow):
             return
         try:
             manager = self._ensure_speech_manager()
-            if manager.enqueue(text, language):
+            if manager.enqueue(text, language, tag=self.voice_reveal_tag(conversation_id)):
                 self.kokoro_streamed_conversations.add(conversation_id)
                 self.voice_output_active = True
                 if hasattr(self, "assistant_status"):
                     self.assistant_status.setText("● SPEAKING")
-            elif not self._kokoro_unavailable_notified:
-                self._kokoro_unavailable_notified = True
-                self.add_activity("Voice output unavailable: " + (manager.last_error or "no speech engine found."))
+            else:
+                self.end_voice_reveal(conversation_id)  # nothing will be heard, so show the text as it comes
+                if not self._kokoro_unavailable_notified:
+                    self._kokoro_unavailable_notified = True
+                    self.add_activity("Voice output unavailable: " + (manager.last_error or "no speech engine found."))
         except Exception as error:  # noqa: BLE001
+            self.end_voice_reveal(conversation_id)
             if not self._kokoro_unavailable_notified:
                 self._kokoro_unavailable_notified = True
                 self.add_activity(f"Speech could not start: {error}")
@@ -3608,6 +3713,9 @@ class MainWindow(QMainWindow):
         kokoro_spoke_this_response = conversation_id in self.kokoro_streamed_conversations
         self.kokoro_streamed_conversations.discard(conversation_id)
         self.streaming_ai_responses.pop(conversation_id, None)
+        reveal = self.voice_reveals.get(conversation_id)
+        if reveal is not None:
+            reveal["final"] = response
 
         try:
 
@@ -3672,11 +3780,14 @@ class MainWindow(QMainWindow):
                         conversation_id,
                         self.current_voice_language,
                     )
-                    self.speak_response(
+                    if not self.speak_response(
                         response,
                         response_language,
-                    )
+                        tag=self.voice_reveal_tag(conversation_id),
+                    ):
+                        self.end_voice_reveal(conversation_id)
                 except Exception as error:  # noqa: BLE001
+                    self.end_voice_reveal(conversation_id)
 
                     self.add_activity(
                         "Voice output error: "
@@ -3703,6 +3814,7 @@ class MainWindow(QMainWindow):
 
         error_message = "Nexus could not complete " "the request.\n\n" f"Error: {error}"
         self.streaming_ai_responses.pop(conversation_id, None)
+        self.end_voice_reveal(conversation_id)
         self.pending_ai_requests = max(0, self.pending_ai_requests - 1)
         self.set_core_idle_state()
 

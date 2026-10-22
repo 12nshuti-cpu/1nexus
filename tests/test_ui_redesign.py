@@ -345,3 +345,110 @@ def test_home_orb_scales_with_window_height(window, qapp):
     window.resize(1300, 600)
     qapp.processEvents()
     assert window.dashboard_core_widget.width() < tall
+
+
+class _FakeVoice:
+    """Stands in for the speech manager: the test decides how far the voice has got."""
+
+    def __init__(self):
+        self.queued = []
+        self.words = 0
+        self.done = False
+        self.busy = False
+        self.last_error = ""
+        self.last_engine = "Natural voice"
+
+    def enqueue(self, text, language="auto", tag=None):
+        self.queued.append((text, tag))
+        return True
+
+    def spoken_words(self, tag):
+        return self.words
+
+    def is_speaking(self, tag):
+        return bool(self.queued) and not self.done
+
+    def forget(self, tag):
+        pass
+
+    def pop_notice(self):
+        return ""
+
+    def stop(self):
+        self.done = True
+
+    def close(self):
+        pass
+
+
+def test_spoken_reply_appears_word_by_word_as_it_is_said(window, qapp, monkeypatch):
+    import time
+
+    seen = {}
+
+    def fake_stream(message, conversation=None, on_chunk=None, on_speech_chunk=None, spoken=False):
+        seen["spoken"] = spoken
+        text = "Sure, it is sunny today. Enjoy the walk."
+        on_chunk(text)
+        on_speech_chunk("Sure, it is sunny today.")
+        on_speech_chunk("Enjoy the walk.")
+        return text
+
+    voice = _FakeVoice()
+    window.kokoro_speech_queue = voice
+    window.voice_enabled = True
+    window.settings.reveal_text_with_voice = True
+    monkeypatch.setattr(window.command_engine.ai, "ask_stream", fake_stream)
+    window.process_command("what's the weather like")
+    deadline = time.time() + 10
+    while time.time() < deadline and window.pending_ai_requests:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+    chat = window.assistant_output
+    assert seen["spoken"] is True                           # the model was asked to talk, not write
+    assert [tag for _text, tag in voice.queued] == ["reply-1", "reply-1"]
+    assert chat.message_count() == 1 and chat._live is None  # nothing shown before the voice starts
+
+    voice.words = 3
+    end = time.time() + 2
+    while time.time() < end and (chat._live is None or "is" not in chat._live.content):
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert chat._live is not None and chat._live.content == "Sure, it is"
+
+    voice.done = True
+    end = time.time() + 2
+    while time.time() < end and window.voice_reveals:
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+    assert not window.voice_reveals and chat._live is None
+    assert chat.message_count() == 2 and "Enjoy the walk." in chat._widgets[-1].content
+
+
+def test_stopping_the_voice_shows_the_whole_reply(window, qapp):
+    voice = _FakeVoice()
+    window.kokoro_speech_queue = voice
+    window.voice_enabled = True
+    window.process_command("time")       # a local command, answered and spoken at once
+    qapp.processEvents()
+    assert window.voice_reveals and window.assistant_output._live is None
+    window.voice_output_active = True
+    from core.voice import VoiceService
+    VoiceService._active_kokoro_queue = voice
+    assert window.interrupt_voice_output()
+    qapp.processEvents()
+    assert not window.voice_reveals
+    assert window.assistant_output.message_count() == 2
+
+
+def test_text_shows_at_once_when_reveal_is_switched_off(window, qapp):
+    voice = _FakeVoice()
+    window.kokoro_speech_queue = voice
+    window.voice_enabled = True
+    window.settings.reveal_text_with_voice = False
+    window.process_command("time")
+    qapp.processEvents()
+    assert not window.voice_reveals and voice.queued
+    assert window.assistant_output.message_count() == 2

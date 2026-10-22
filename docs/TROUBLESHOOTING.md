@@ -26,7 +26,9 @@ a summary of the current configuration (no network calls, no secrets). Logs mask
 | "No speech detected" | You were quiet, or the room is very noisy. Speak after the ● LISTENING indicator, move closer, or switch on **Push-to-talk**. |
 | Recognition model "could not be downloaded" | The first use needs internet (Hugging Face). Connect once; it works offline afterwards. Corporate proxies/firewalls may block `huggingface.co`. |
 | Recognition is inaccurate | Use a bigger model (Settings → Recognition model → small), set the voice language explicitly, use an English-only model for English. Kinyarwanda is not supported by Whisper. |
-| Voice replies use a robotic Windows voice | Kokoro is not installed or failed; the activity log says which. See [VOICE.md](VOICE.md#installing-kokoro-optional). |
+| Voice replies use a robotic Windows voice | The natural voice needs the internet: check the connection, and that Settings → Speech output → Speech engine is *Automatic* or *Natural voice only*. The activity log says why NEXUS switched. Offline, install Kokoro: see [VOICE.md](VOICE.md#installing-kokoro-optional). |
+| The voice starts a couple of seconds after the answer is ready | Normal for the natural voice: it waits about two seconds for the first audio from the service, then speaks without pauses. Kokoro starts faster on a fast PC. |
+| I want the whole answer on screen at once | Settings → Speech output → turn off *Words follow the voice*. |
 | "No compatible Python found" while installing Kokoro | Kokoro needs Python 3.10-3.12 (not 3.13+). Install Python 3.12 (tick *py launcher*) and run the setup again, or set `NEXUS_KOKORO_PYTHON`. |
 | Kokoro setup finished but speech test failed | The voice model downloads from Hugging Face on first use; check the internet connection and re-run `python scripts/setup_kokoro.py`. Details are in `%LOCALAPPDATA%\NEXUS\logs\kokoro_worker.log`. |
 | NEXUS hears itself | Don't use speakers at high volume next to the microphone; NEXUS stops speaking when you press the mic, but a loud echo can still be picked up. Headphones fix it. |

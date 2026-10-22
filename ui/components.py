@@ -1189,7 +1189,8 @@ class ChatView(QScrollArea):
         return box
 
     # ---- public API
-    def show_conversation(self, key, messages, live_text: str = "", thinking: bool = False, force_scroll=False):
+    def show_conversation(self, key, messages, live_text: str = "", thinking: bool = False, force_scroll=False,
+                          live_stamp: str = "writing…"):
         messages = [m for m in messages if str(m.get("role")) in ("user", "assistant")]
         keys = [(m.get("id"), m.get("role"), len(str(m.get("content", "")))) for m in messages]
         was_at_bottom = self._at_bottom()
@@ -1211,7 +1212,7 @@ class ChatView(QScrollArea):
 
         if live_text:
             if self._live is None:
-                self._live = MessageWidget("assistant", live_text, "writing…", streaming=True)
+                self._live = MessageWidget("assistant", live_text, live_stamp, streaming=True)
                 self._connect(self._live)
                 self.layout_.insertWidget(self.layout_.count() - 2, self._live)
             else:

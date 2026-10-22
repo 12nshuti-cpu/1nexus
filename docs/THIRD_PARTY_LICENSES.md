@@ -21,6 +21,8 @@ NEXUS itself has no licence yet; choose one before publishing.
 | faster-whisper, ctranslate2 | MIT | |
 | onnxruntime | MIT | |
 | keyring | MIT | |
+| edge-tts | LGPL-3.0 | Natural voice. Imported as an unmodified library; ship the LGPL text and keep it replaceable (one-folder build). Uses Microsoft's Read Aloud service, which has no published terms for third-party use: review before commercial distribution. |
+| aiohttp (and its dependencies) | Apache-2.0 / MIT | Pulled in by edge-tts. |
 | PyAV | BSD-3-Clause | **Bundles FFmpeg libraries**, which can be LGPL or GPL depending on the build. Review before distributing. |
 
 ## Build tools (not shipped, but their output includes a bootloader)

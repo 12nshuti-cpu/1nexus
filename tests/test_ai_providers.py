@@ -288,3 +288,18 @@ def test_microphone_check_states():
         raise OSError("PortAudio not found")
 
     assert "could not be queried" in check_microphone(broken).message
+
+
+def test_spoken_requests_ask_for_a_conversational_reply(service, settings, monkeypatch):
+    settings.ai_engine = "local"
+    prompts = []
+
+    def fake_stream(messages, model=None):
+        prompts.append(messages[0]["content"])
+        yield "Sure thing."
+
+    monkeypatch.setattr(service, "_chat_stream", fake_stream)
+    service.ask_stream("how are you", [], spoken=True)
+    service.ask_stream("how are you", [])
+    assert ai_module.SPOKEN_STYLE.strip() in prompts[0]
+    assert ai_module.SPOKEN_STYLE.strip() not in prompts[1]   # typed questions keep the written style

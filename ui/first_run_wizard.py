@@ -212,10 +212,12 @@ class FirstRunWizard(QDialog):
         self.voice_check.setChecked(self.settings.voice_enabled)
         layout.addWidget(self.voice_check)
         layout.addWidget(self._label(
-            "NEXUS uses the Kokoro voice if you have installed it (see the Voice guide) and otherwise the built-in "
-            "Windows voice. You will be told if the fallback voice is used.", muted=True))
+            "Automatic uses a natural, human-sounding voice when you are online (Microsoft's neural voices: the "
+            "text being spoken is sent to Microsoft), Kokoro if you have installed it (see the Voice guide), and "
+            "the built-in Windows voice otherwise. You will be told whenever NEXUS switches voices.", muted=True))
         self.engine_combo = QComboBox()
-        self.engine_combo.addItem("Automatic (Kokoro, then Windows voice)", "auto")
+        self.engine_combo.addItem("Automatic (natural voice, then Kokoro, then Windows voice)", "auto")
+        self.engine_combo.addItem("Natural voice only (online)", "natural")
         self.engine_combo.addItem("Kokoro only", "kokoro")
         self.engine_combo.addItem("Windows voice only", "windows")
         index = self.engine_combo.findData(self.settings.tts_engine)

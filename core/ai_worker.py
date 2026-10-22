@@ -35,6 +35,7 @@ class AIWorker(QObject):
                     kwargs["on_speech_chunk"] = lambda text: self.speech_chunk.emit(
                         self.conversation_id, str(text), self.speech_language
                     )
+                    kwargs["spoken"] = True  # ask for a conversational reply, not a written one
                 response = ask_stream(self.message, self.conversation, **kwargs)
             else:
                 response = self.ai_service.ask(self.message, self.conversation)

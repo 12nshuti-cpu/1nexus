@@ -20,6 +20,8 @@ os.environ["XDG_CONFIG_HOME"] = str(_SESSION_DIR / "xdg-config")
 os.environ["XDG_DATA_HOME"] = str(_SESSION_DIR / "xdg-data")
 os.environ["HOME"] = str(_SESSION_DIR / "home")
 os.environ["NEXUS_DISABLE_KEYRING"] = "1"
+# The natural voice sends text to an online service; tests use fakes instead.
+os.environ["NEXUS_DISABLE_NATURAL_VOICE"] = "1"
 # On Windows QSettings lives in the registry and ignores XDG paths; this keeps every
 # test's settings in a throw-away INI file instead of the real user's preferences.
 os.environ["NEXUS_SETTINGS_DIR"] = str(_SESSION_DIR / "settings")

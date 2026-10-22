@@ -4,7 +4,7 @@ NEXUS has two independent halves, and each can fail without breaking the other:
 
 ```
  microphone ──► speech recognition ──► NEXUS (tools, memory, AI) ──► speech synthesis ──► speakers
-   (you)          Whisper, on your PC        same as typing            Kokoro / Windows voice
+   (you)          Whisper, on your PC        same as typing            natural voice / Kokoro / Windows
 ```
 
 ## Speaking to NEXUS
@@ -50,12 +50,31 @@ not be downloaded). NEXUS never speaks an error as if it were an answer.
 
 ## NEXUS speaking
 
-NEXUS speaks with **Kokoro** when it is installed, and with the **Windows voice** otherwise, or whenever Kokoro
-fails. When the fallback is used you are told in the activity log. Settings → **Speech output**:
+NEXUS talks back like a person rather than reading its answer out:
 
-* *Automatic* (Kokoro, then Windows voice), *Kokoro only* (never switches voices), *Windows voice only*.
-* Voice (e.g. `af_heart`) and speed (0.5-2.0).
+* **A natural voice.** By default NEXUS uses Microsoft's neural voices (the ones behind Edge's *Read Aloud*).
+  They need no account or key, but they need the internet, and **the text being spoken is sent to Microsoft**.
+* **The words follow the voice.** While NEXUS speaks, the answer appears word by word as it is said, instead of
+  the whole text appearing first and then being read out. Esc (or the orb) stops the voice and shows the rest at
+  once. Settings → Speech output → *Words follow the voice* turns this off.
+* **A spoken style.** When the reply will be spoken, the AI is asked to answer the way someone talks: the answer
+  first, short sentences, no bullet lists or headings.
+* It starts about two seconds after the answer begins (the time the voice service takes to send the first
+  audio) and then speaks without pauses, while the rest of the answer is still being written.
+
+If the natural voice is unavailable (offline, or the service fails), NEXUS uses **Kokoro** if installed, then the
+**Windows voice**, and tells you in the activity log. Settings → **Speech output**:
+
+* *Automatic* (natural voice, then Kokoro, then Windows voice), *Natural voice only*, *Kokoro only*,
+  *Windows voice only*. The "only" choices never switch voices.
+* Natural voice for English: Ava, Andrew, Emma, Brian (American), Sonia, Ryan (British), Asilia, Chilemba
+  (Kenyan English). French, Spanish, Italian, Portuguese, German and Swahili replies get a native voice.
+  Kinyarwanda has no natural voice; those replies use the English voice.
+* Kokoro voice (e.g. `af_heart`) and speed (0.5-2.0; the speed applies to every engine).
 * The speech queue never overlaps two answers, and the stop control halts playback immediately.
+
+For privacy (nothing leaves your PC), choose *Kokoro only* or *Windows voice only* together with the **Local** AI
+engine.
 
 Kokoro keeps its model loaded in a helper process, so it is not reloaded for every sentence. After repeated
 failures it pauses for a while and the Windows voice takes over.

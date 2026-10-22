@@ -10,6 +10,8 @@ import shutil
 
 import subprocess
 
+import threading
+
 
 
 
@@ -29,6 +31,16 @@ from core.gemini_engine import GeminiUnavailable, generate_text, gemini_is_confi
 
 
 
+
+
+SPOKEN_STYLE = """
+YOUR REPLY WILL BE SPOKEN ALOUD
+- You are talking with the user, not writing to them. Answer the way a friendly, sharp assistant would say it out loud.
+- Lead with the answer itself, in a sentence or two. Give more detail only when it is really needed, or offer it.
+- Use short, natural sentences and contractions (I'm, you'll, that's). Vary how you start.
+- No headings, bullet points, numbered lists, tables, bold text, emoji or code blocks: they cannot be heard. Say a list as a sentence ("you'll need flour, eggs and milk").
+- Say numbers, times and units the way people say them ("about twenty minutes", "half past three").
+"""
 
 
 CAPABILITY_NOTE = """
@@ -105,6 +117,8 @@ class AIService:
         self.session.trust_env = False
 
         self.system_prompt = settings.load_system_prompt()
+        # Set per request (per thread) when the reply will be spoken: see ask_stream(spoken=True).
+        self._request = threading.local()
         # Optional callable(online: bool) -> str supplying user-approved memories.
         self.memory_provider = None
 
@@ -344,8 +358,25 @@ class AIService:
                 except Exception:
                     pass
 
-    def ask_stream(self, message, conversation=None, on_chunk=None, on_speech_chunk=None):
-        """Stream local chat text and complete speech phrases while Ollama generates."""
+    def _with_voice_style(self, prompt: str) -> str:
+        if getattr(getattr(self, "_request", None), "spoken", False):
+            return f"{prompt.strip()}\n\n{SPOKEN_STYLE.strip()}"
+        return prompt
+
+    def ask_stream(self, message, conversation=None, on_chunk=None, on_speech_chunk=None, spoken=False):
+        """Stream local chat text and complete speech phrases while Ollama generates.
+
+        ``spoken=True`` asks the model for a conversational reply suited to being heard.
+        """
+        if not hasattr(self, "_request"):
+            self._request = threading.local()
+        self._request.spoken = bool(spoken)
+        try:
+            return self._ask_stream(message, conversation, on_chunk, on_speech_chunk)
+        finally:
+            self._request.spoken = False
+
+    def _ask_stream(self, message, conversation=None, on_chunk=None, on_speech_chunk=None):
         message = str(message or "").strip()
         if not message:
             return "Please enter a message."
@@ -956,7 +987,7 @@ class AIService:
         memory = self._memory_block(online=False)
         if memory:
             parts.append(memory)
-        return "\n\n".join(parts)
+        return self._with_voice_style("\n\n".join(parts))
 
 
 
@@ -1115,7 +1146,7 @@ class AIService:
 
                     self._trim_history(conversation),
 
-                    self.system_prompt,
+                    self._with_voice_style(self.system_prompt),
 
                     self.settings.gemini_text_model,
 

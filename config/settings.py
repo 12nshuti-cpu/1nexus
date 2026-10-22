@@ -76,6 +76,11 @@ MODEL_TOP_K = int(os.environ.get("NEXUS_TOP_K", "40"))
 MODEL_REPEAT_PENALTY = float(os.environ.get("NEXUS_REPEAT_PENALTY", "1.1"))
 MODEL_CONTEXT = int(os.environ.get("NEXUS_NUM_CTX", "8192"))
 MODEL_NUM_PREDICT = int(os.environ.get("NEXUS_NUM_PREDICT", "768"))
+
+# Speech output engines (see core/speech.py) and the natural (Microsoft neural) voice id format.
+TTS_ENGINES = ("auto", "natural", "kokoro", "windows")
+DEFAULT_NATURAL_VOICE = "en-US-AvaMultilingualNeural"
+_NATURAL_VOICE = re.compile(r"[a-z]{2,3}-[A-Z]{2}-[A-Za-z]{2,40}Neural")
 MODEL_KEEP_ALIVE = os.environ.get("NEXUS_KEEP_ALIVE", "30m")
 
 # Gemini is optional. Credentials are read only when an online route is chosen.
@@ -203,8 +208,10 @@ class NEXUSSettings:
         "speak_reminders": True,
         # Onboarding
         "first_run_completed": False,
-        # Speech output (Kokoro with a Windows-voice fallback)
+        # Speech output (natural online voice, then Kokoro, then the Windows voice)
         "tts_engine": "auto",
+        "natural_voice": "en-US-AvaMultilingualNeural",
+        "reveal_text_with_voice": True,  # show a spoken reply word by word as it is said
         "kokoro_voice": "af_heart",
         "kokoro_speed": 1.0,
         # Speech input (local faster-whisper)
@@ -421,14 +428,32 @@ class NEXUSSettings:
     # -- speech output -----------------------------------------------------
     @property
     def tts_engine(self) -> str:
-        """auto = Kokoro, then the Windows voice if Kokoro is unavailable."""
+        """auto = natural voice, then Kokoro, then the Windows voice, whichever works first."""
         value = str(self.get("tts_engine", "auto") or "auto").strip().lower()
-        return value if value in {"auto", "kokoro", "windows"} else "auto"
+        return value if value in TTS_ENGINES else "auto"
 
     @tts_engine.setter
     def tts_engine(self, value: str) -> None:
         value = str(value or "auto").strip().lower()
-        self.set("tts_engine", value if value in {"auto", "kokoro", "windows"} else "auto")
+        self.set("tts_engine", value if value in TTS_ENGINES else "auto")
+
+    @property
+    def natural_voice(self) -> str:
+        value = str(self.get("natural_voice", DEFAULT_NATURAL_VOICE) or DEFAULT_NATURAL_VOICE).strip()
+        return value if _NATURAL_VOICE.fullmatch(value) else DEFAULT_NATURAL_VOICE
+
+    @natural_voice.setter
+    def natural_voice(self, value: str) -> None:
+        value = str(value or DEFAULT_NATURAL_VOICE).strip()
+        self.set("natural_voice", value if _NATURAL_VOICE.fullmatch(value) else DEFAULT_NATURAL_VOICE)
+
+    @property
+    def reveal_text_with_voice(self) -> bool:
+        return self.boolean("reveal_text_with_voice")
+
+    @reveal_text_with_voice.setter
+    def reveal_text_with_voice(self, value: bool) -> None:
+        self.set("reveal_text_with_voice", bool(value))
 
     @property
     def kokoro_voice(self) -> str:

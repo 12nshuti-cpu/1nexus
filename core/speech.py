@@ -1,6 +1,15 @@
-"""Speech output for NEXUS: Kokoro (neural, local) with a Windows-voice fallback.
+"""Speech output for NEXUS: a natural online voice, Kokoro (local), and the Windows voice.
 
-Why a separate process
+Engines, in the order *Automatic* tries them
+-------------------------------------------
+1. **Natural voice**: Microsoft's neural voices (the ones behind Edge's Read Aloud) through
+   the ``edge-tts`` package. They sound like a person talking, need no key, and report when
+   each word is spoken, so the chat can show the words as they are said. The spoken text is
+   sent to Microsoft, so it needs the internet.
+2. **Kokoro**: a neural voice that runs on this PC (installed separately, see below).
+3. **Windows voice**: the built-in SAPI voice. Always there, but sounds robotic.
+
+Kokoro: why a separate process
 ----------------------
 Kokoro and its PyTorch dependencies support a narrower range of Python
 versions than the rest of the app. NEXUS therefore runs Kokoro in a *separate
@@ -17,13 +26,17 @@ Behaviour guarantees
 --------------------
 * Nothing here touches the UI thread - callers only enqueue text.
 * Playback can be cancelled at any time (:meth:`SpeechManager.stop`).
-* If Kokoro is missing or keeps failing, the Windows system voice is used and
-  the user is *told* (:meth:`SpeechManager.pop_notice`); it never switches
-  silently. After repeated Kokoro failures it is not retried for a while.
+* If an engine is missing or keeps failing, the next one is used and the user
+  is *told* (:meth:`SpeechManager.pop_notice`); it never switches silently.
+  After repeated failures an engine is not retried for a while.
+* :meth:`SpeechManager.spoken_words` says how far into a reply the voice has got,
+  so the interface can reveal the text in step with the speech.
 * Error text is never spoken as if it were an answer.
 """
 from __future__ import annotations
 
+import asyncio
+import bisect
 import json
 import os
 import queue
@@ -56,6 +69,31 @@ ENGLISH_VOICES = (
     "am_adam", "am_michael", "am_echo",
 )
 
+# Microsoft neural voices for the natural engine. English uses the voice chosen in Settings.
+NATURAL_LANGUAGE_VOICES = {
+    "fr": "fr-FR-VivienneMultilingualNeural",
+    "es": "es-ES-ElviraNeural",
+    "it": "it-IT-ElsaNeural",
+    "pt": "pt-BR-FranciscaNeural",
+    "de": "de-DE-SeraphinaMultilingualNeural",
+    "sw": "sw-KE-ZuriNeural",
+}
+DEFAULT_NATURAL_VOICE = "en-US-AvaMultilingualNeural"
+# (voice id, label) offered in Settings for English replies.
+NATURAL_ENGLISH_VOICES = (
+    ("en-US-AvaMultilingualNeural", "Ava (warm, expressive)"),
+    ("en-US-AndrewMultilingualNeural", "Andrew (warm, confident)"),
+    ("en-US-EmmaMultilingualNeural", "Emma (cheerful, clear)"),
+    ("en-US-BrianMultilingualNeural", "Brian (relaxed, casual)"),
+    ("en-GB-SoniaNeural", "Sonia (British)"),
+    ("en-GB-RyanNeural", "Ryan (British)"),
+    ("en-KE-AsiliaNeural", "Asilia (Kenyan English)"),
+    ("en-KE-ChilembaNeural", "Chilemba (Kenyan English)"),
+)
+NATURAL_SAMPLE_RATE = 24000
+# Speaking pace used to estimate word timing when an engine does not report it.
+_WORDS_PER_SECOND = 2.6
+
 _TAG_LINE = re.compile(r"^\s*\[(?:LOCAL|GEMINI|ONLINE)[^\]\n]*\]\s*", re.IGNORECASE)
 
 
@@ -73,13 +111,27 @@ def clean_for_speech(text: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def split_for_speech(text: str, max_chars: int = 240) -> list[str]:
-    """Split into phrase-sized chunks so playback starts quickly."""
+def split_for_speech(text: str, max_chars: int = 240, first_max: int | None = None) -> list[str]:
+    """Split into phrase-sized chunks so playback starts quickly.
+
+    With ``first_max`` the first chunk is just the opening sentence (at most that long), so
+    the voice can start while the rest is still being prepared.
+    """
     value = clean_for_speech(text)
     if not value:
         return []
     sentences = re.split(r"(?<=[.!?…])\s+", value)
     chunks: list[str] = []
+    if first_max and (len(sentences) > 1 or len(sentences[0]) > first_max):
+        first = sentences.pop(0)
+        if len(first) > first_max:
+            cut = first.rfind(", ", 0, first_max) + 1  # a pause at a comma sounds natural
+            if cut <= 20:
+                cut = first.rfind(" ", 0, first_max)
+            cut = cut if cut > 20 else first_max
+            sentences.insert(0, first[cut:].strip())
+            first = first[:cut].strip()
+        chunks.append(first)
     current = ""
     for sentence in sentences:
         while len(sentence) > max_chars:  # very long run-on: cut at a space
@@ -98,6 +150,41 @@ def split_for_speech(text: str, max_chars: int = 240) -> list[str]:
     if current:
         chunks.append(current)
     return [c for c in chunks if c]
+
+
+_WORD = re.compile(r"\S+")
+_URL = re.compile(r"(?:https?://|www\.)\S+")
+_UNSPOKEN_BLOCK = re.compile(r"```[\s\S]*?(?:```|\Z)|^[ \t]*\|.*\|[ \t]*$", re.MULTILINE)
+
+
+def count_words(text: str) -> int:
+    """Words as NEXUS counts them for pacing: whitespace-separated runs with a letter or digit."""
+    return sum(1 for token in _WORD.findall(str(text or "")) if any(c.isalnum() for c in token))
+
+
+def reveal_prefix(text: str, words: int) -> str:
+    """The start of ``text`` (markdown, as displayed) covering its first ``words`` spoken words.
+
+    Counting follows :func:`clean_for_speech`: code blocks and tables are not spoken, so they
+    appear with the next spoken word; a URL is spoken as "a link" (two words).
+    """
+    value = str(text or "")
+    if words <= 0:
+        return ""
+    tag = _TAG_LINE.match(value)
+    start = tag.end() if tag else 0
+    unspoken = [(m.start(), m.end()) for m in _UNSPOKEN_BLOCK.finditer(value, start)]
+    spoken = 0
+    end = start
+    for token in _WORD.finditer(value, start):
+        word = token.group()
+        if not any(c.isalnum() for c in word) or any(a <= token.start() < b for a, b in unspoken):
+            continue
+        if spoken >= words:
+            return value[:end]
+        spoken += 2 if _URL.match(word) else 1
+        end = token.end()
+    return value  # the voice has reached the end of what is shown
 
 
 # --------------------------------------------------------------------------
@@ -158,7 +245,11 @@ def _no_window_flags() -> int:
 # Kokoro helper process
 # --------------------------------------------------------------------------
 
-class KokoroError(RuntimeError):
+class SpeechError(RuntimeError):
+    pass
+
+
+class KokoroError(SpeechError):
     pass
 
 
@@ -296,6 +387,184 @@ class KokoroHelper:
 
 
 # --------------------------------------------------------------------------
+# Natural voice (Microsoft neural voices via edge-tts)
+# --------------------------------------------------------------------------
+
+@dataclass
+class Clip:
+    """Decoded speech: 16-bit mono PCM plus the time (seconds) each word starts."""
+
+    pcm: bytes
+    rate: int
+    word_starts: list
+
+    @property
+    def duration(self) -> float:
+        return len(self.pcm) / 2 / max(1, self.rate)
+
+
+class Mp3Decoder:
+    """Turns MP3 bytes into 16-bit mono PCM as they arrive (PyAV, already installed for speech recognition)."""
+
+    def __init__(self, rate: int = NATURAL_SAMPLE_RATE):
+        import av
+
+        self._codec = av.CodecContext.create("mp3", "r")
+        self._resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
+
+    def _pcm(self, frames) -> bytes:
+        pcm = bytearray()
+        for frame in frames:
+            for out in self._resampler.resample(frame):
+                pcm += bytes(out.planes[0])[: out.samples * 2]
+        return bytes(pcm)
+
+    def feed(self, data: bytes) -> bytes:
+        frames = []
+        for packet in self._codec.parse(data):
+            frames.extend(self._codec.decode(packet))
+        return self._pcm(frames)
+
+    def flush(self) -> bytes:
+        frames = []
+        for packet in self._codec.parse(None):
+            frames.extend(self._codec.decode(packet))
+        frames.extend(self._codec.decode(None))
+        pcm = self._pcm(frames)
+        tail = bytearray()
+        for out in self._resampler.resample(None):
+            tail += bytes(out.planes[0])[: out.samples * 2]
+        return pcm + bytes(tail)
+
+
+class NaturalVoice:
+    """Microsoft's online neural voices. Free and keyless, but the text goes to Microsoft."""
+
+    name = "Natural voice"
+    TIMEOUT_SECONDS = 30.0
+
+    @property
+    def available(self) -> bool:
+        if os.environ.get("NEXUS_DISABLE_NATURAL_VOICE"):
+            return False
+        try:
+            import av  # noqa: F401
+            import edge_tts  # noqa: F401
+        except Exception:  # noqa: BLE001 - a missing optional package just means "not available"
+            return False
+        return True
+
+    def warm_up(self) -> None:
+        """Load the voice libraries ahead of the first reply (about a second on a typical PC)."""
+        if not self.available:
+            return
+        try:
+            import ssl
+
+            import aiohttp  # noqa: F401
+            import av  # noqa: F401
+            import edge_tts  # noqa: F401
+
+            ssl.create_default_context()
+        except Exception:  # noqa: BLE001 - only an optimisation
+            pass
+
+    @staticmethod
+    def rate(speed: float) -> str:
+        return f"{round((float(speed) - 1.0) * 100):+d}%"
+
+    def stream(
+        self, text: str, voice: str, speed: float, on_pcm: Callable[[bytes], None], on_word: Callable[[float], None]
+    ) -> None:
+        """Fetch speech, handing over PCM and word start times (seconds) as they arrive."""
+        import edge_tts
+
+        decoder = Mp3Decoder()
+        received = False
+
+        async def fetch() -> None:
+            nonlocal received
+            communicate = edge_tts.Communicate(text, voice, rate=self.rate(speed), boundary="WordBoundary")
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    received = True
+                    pcm = decoder.feed(chunk["data"])
+                    if pcm:
+                        on_pcm(pcm)
+                elif chunk.get("type") == "WordBoundary":
+                    on_word(float(chunk.get("offset", 0)) / 1e7)  # 100-ns units
+
+        try:
+            asyncio.run(asyncio.wait_for(fetch(), self.TIMEOUT_SECONDS))
+        except asyncio.TimeoutError:
+            raise SpeechError("the natural voice service did not answer in time") from None
+        except Exception as error:  # noqa: BLE001 - network, DNS, service changes
+            detail = str(error) or type(error).__name__
+            raise SpeechError(f"could not reach the natural voice service: {detail[:160]}") from error
+        if not received:
+            raise SpeechError("the natural voice service returned no audio")
+        tail = decoder.flush()
+        if tail:
+            on_pcm(tail)
+
+    def synthesize(self, text: str, voice: str, speed: float = 1.0) -> Clip:
+        """The whole phrase at once (for callers that do not need streaming)."""
+        pcm = bytearray()
+        starts: list = []
+        self.stream(text, voice, speed, pcm.extend, starts.append)
+        return Clip(bytes(pcm), NATURAL_SAMPLE_RATE, starts)
+
+
+class NaturalSpeechJob:
+    """One phrase being fetched in the background; its audio can be played while it arrives."""
+
+    def __init__(self, natural, text: str, voice: str, speed: float):
+        self.chunks: "queue.Queue[Optional[bytes]]" = queue.Queue()
+        self.word_starts: list = []
+        self.error: Exception | None = None
+        self.rate = NATURAL_SAMPLE_RATE
+        self._natural = natural
+        self._args = (text, voice, speed)
+        self.thread = threading.Thread(target=self._run, name="NEXUS-Speech-fetch", daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        try:
+            stream = getattr(self._natural, "stream", None)
+            if callable(stream):
+                stream(*self._args, self.chunks.put, self.word_starts.append)
+            else:
+                clip = self._natural.synthesize(*self._args)
+                self.rate = clip.rate
+                self.word_starts.extend(clip.word_starts)
+                self.chunks.put(clip.pcm)
+        except Exception as error:  # noqa: BLE001 - reported by whoever plays the job
+            self.error = error
+        finally:
+            self.chunks.put(None)
+
+    def next_chunk(self, timeout: float) -> Optional[bytes]:
+        try:
+            return self.chunks.get(timeout=timeout)
+        except queue.Empty:
+            raise SpeechError("the natural voice service stopped sending audio") from None
+
+
+def play_pcm(chunks, rate: int, stream_holder: list) -> None:
+    """Play 16-bit mono PCM chunks through sounddevice as they come; ``stream_holder`` lets stop() abort it."""
+    import sounddevice as sd
+
+    with sd.RawOutputStream(samplerate=rate, channels=1, dtype="int16", blocksize=2048) as stream:
+        stream_holder.append(stream)
+        try:
+            for chunk in chunks:
+                stream.write(chunk)
+        finally:
+            if stream_holder:
+                stream_holder.clear()
+
+
+# --------------------------------------------------------------------------
 # Windows system voice (fallback)
 # --------------------------------------------------------------------------
 
@@ -416,10 +685,14 @@ def play_wav(path: Path, stream_holder: list) -> None:
 
 
 class SpeechManager:
-    """Queue of phrases -> Kokoro (preferred) or the Windows voice (fallback)."""
+    """Queue of phrases -> natural voice, Kokoro, or the Windows voice (see the module notes)."""
 
     MAX_KOKORO_FAILURES = 2
     KOKORO_COOLDOWN_SECONDS = 300.0
+    MAX_NATURAL_FAILURES = 2
+    NATURAL_COOLDOWN_SECONDS = 120.0
+    FIRST_PHRASE_CHARS = 90   # a short opening phrase gets the voice going sooner
+    PREFETCH_PHRASES = 2      # natural-voice phrases fetched while the current one plays
 
     def __init__(
         self,
@@ -429,6 +702,8 @@ class SpeechManager:
         helper_path: Path | None = None,
         fallback: WindowsSpeechFallback | None = None,
         player: Callable[[Path, list], None] | None = None,
+        natural: NaturalVoice | None = None,
+        pcm_player: Callable[..., None] | None = None,
         log_dir: Path | None = None,
         clock: Callable[[], float] = time.monotonic,
         project_root: Path | None = None,
@@ -441,7 +716,9 @@ class SpeechManager:
         self.python_path = python_path if python_path is not None else find_kokoro_python(project_root)
         self.helper_path = helper_path if helper_path is not None else find_kokoro_helper()
         self.fallback = fallback if fallback is not None else WindowsSpeechFallback()
+        self.natural = natural if natural is not None else NaturalVoice()
         self._player = player or play_wav
+        self._pcm_player = pcm_player or play_pcm
         self._clock = clock
         if log_dir is None:
             from config.settings import USER_LOG_DIR
@@ -457,9 +734,16 @@ class SpeechManager:
         self._stream_holder: list = []
         self._failures = 0
         self._disabled_until = 0.0
+        self._natural_failures = 0
+        self._natural_disabled_until = 0.0
+        self._prefetched: dict = {}   # (text, voice, speed) -> NaturalSpeechJob already fetching
         self._notices: list[str] = []
         self._last_engine = ""
         self._last_error = ""
+        # Progress per tag (one tag per reply), so the interface can show words as they are spoken.
+        self._words_done: dict = {}   # tag -> words in phrases already finished
+        self._pending: dict = {}      # tag -> phrases queued or playing
+        self._playing = None          # (tag, monotonic start, word start times, word count) of the current phrase
         self.speaking = False
 
     # ------------------------------------------------------------------ status
@@ -472,15 +756,25 @@ class SpeechManager:
         return self.kokoro_installed and self._clock() >= self._disabled_until
 
     @property
+    def natural_installed(self) -> bool:
+        return bool(self.natural.available)
+
+    @property
+    def natural_usable(self) -> bool:
+        return self.natural_installed and self._clock() >= self._natural_disabled_until
+
+    @property
     def available(self) -> bool:
         if self._closed:
             return False
         engine = self._engine_choice()
+        if engine == "natural":
+            return self.natural_installed
         if engine == "kokoro":
             return self.kokoro_installed
         if engine == "windows":
             return self.fallback.available
-        return self.kokoro_installed or self.fallback.available
+        return self.natural_installed or self.kokoro_installed or self.fallback.available
 
     @property
     def busy(self) -> bool:
@@ -508,6 +802,8 @@ class SpeechManager:
     def status(self) -> dict:
         return {
             "engine_setting": self._engine_choice(),
+            "natural_installed": self.natural_installed,
+            "natural_cooling_down": self.natural_installed and not self.natural_usable,
             "kokoro_installed": self.kokoro_installed,
             "kokoro_python": str(self.python_path) if self.python_path else "",
             "kokoro_cooling_down": self.kokoro_installed and not self.kokoro_usable,
@@ -521,7 +817,49 @@ class SpeechManager:
             value = str(self.settings.tts_engine)
         except Exception:  # noqa: BLE001
             value = "auto"
-        return value if value in {"auto", "kokoro", "windows"} else "auto"
+        return value if value in {"auto", "natural", "kokoro", "windows"} else "auto"
+
+    # ---------------------------------------------------------------- progress
+    def spoken_words(self, tag) -> int:
+        """How many words of the reply ``tag`` the voice has said so far (an estimate between word marks)."""
+        with self._lock:
+            done = self._words_done.get(tag, 0)
+            playing = self._playing
+        if playing is not None and playing[0] == tag:
+            _tag, started, times, words = playing
+            done += min(words, bisect.bisect_right(times, time.monotonic() - started))
+        return done
+
+    def is_speaking(self, tag) -> bool:
+        """True while any phrase of the reply ``tag`` is queued or playing."""
+        with self._lock:
+            return self._pending.get(tag, 0) > 0
+
+    def forget(self, tag) -> None:
+        with self._lock:
+            self._words_done.pop(tag, None)
+
+    def _start_words(
+        self, tag, text: str, starts=None, duration: float | None = None, speed: float = 1.0, live: bool = False
+    ) -> None:
+        """Mark the phrase as playing from now, with a start time for each of its words.
+
+        ``live`` means ``starts`` is still being filled in by the engine as the audio arrives;
+        it is used as is (the natural voice marks the same words NEXUS counts, one for one).
+        """
+        words = count_words(text)
+        if live:
+            times = starts
+        elif words and starts:
+            # Map the engine's word marks onto NEXUS's own word count (they rarely differ much).
+            times = [starts[min(len(starts) - 1, i * len(starts) // words)] for i in range(words)]
+        elif words and duration:
+            times = [duration * i / words for i in range(words)]
+        else:
+            pace = _WORDS_PER_SECOND * max(0.5, speed)
+            times = [i / pace for i in range(words)]
+        with self._lock:
+            self._playing = (tag, time.monotonic(), times, words)
 
     # ------------------------------------------------------------------- queue
     def _voice_and_speed(self, language: str) -> tuple[str, str, float]:
@@ -537,18 +875,35 @@ class SpeechManager:
             speed = 1.0
         return lang, voice, max(0.5, min(2.0, speed))
 
-    def enqueue(self, text: str, language: str = "auto") -> bool:
-        """Queue text for speech. Returns False if nothing can speak it."""
-        phrases = split_for_speech(text)
+    def _natural_voice(self, language: str) -> str:
+        code = str(language or "auto").lower()
+        if code in NATURAL_LANGUAGE_VOICES:
+            return NATURAL_LANGUAGE_VOICES[code]
+        try:
+            return str(self.settings.natural_voice)
+        except Exception:  # noqa: BLE001
+            return DEFAULT_NATURAL_VOICE
+
+    def enqueue(self, text: str, language: str = "auto", tag=None) -> bool:
+        """Queue text for speech. Returns False if nothing can speak it.
+
+        ``tag`` names the reply the text belongs to, for :meth:`spoken_words`.
+        """
+        # Nothing playing means the listener is waiting: a short first phrase starts the voice sooner.
+        # The natural voice streams its audio, so it starts just as fast with the whole phrase.
+        starting = self._queue.unfinished_tasks == 0
+        streams = self._engine_choice() in {"auto", "natural"} and self.natural_usable
+        phrases = split_for_speech(text, first_max=self.FIRST_PHRASE_CHARS if starting and not streams else None)
         if not phrases:
             return True
         if not self.available:
             self._last_error = (
-                "No speech engine is available. Install Kokoro (see the Voice guide) "
-                "or use Windows, which has a built-in voice."
+                "No speech engine is available. Connect to the internet for the natural voice, "
+                "install Kokoro (see the Voice guide), or use Windows, which has a built-in voice."
             )
             return False
         lang, voice, speed = self._voice_and_speed(language)
+        natural_voice = self._natural_voice(language)
         with self._lock:
             if self._closed:
                 return False
@@ -557,16 +912,20 @@ class SpeechManager:
                 self._thread = threading.Thread(target=self._run, name="NEXUS-Speech", daemon=True)
                 self._thread.start()
             for phrase in phrases:
-                self._queue.put((phrase, lang, voice, speed, generation))
+                self._pending[tag] = self._pending.get(tag, 0) + 1
+                self._queue.put((phrase, lang, voice, speed, generation, tag, natural_voice))
         return True
 
     def _run(self) -> None:
         while True:
             item = self._queue.get()
+            tag = None
+            words = 0
             try:
                 if item is None:
                     return
-                text, lang, voice, speed, generation = item
+                text, lang, voice, speed, generation, tag, natural_voice = item
+                words = count_words(text)
                 with self._lock:
                     if self._closed:
                         return
@@ -574,10 +933,19 @@ class SpeechManager:
                 if stale:
                     continue
                 self.speaking = True
-                self._speak_item(text, lang, voice, speed, generation)
+                self._speak_item(text, lang, voice, speed, generation, tag, natural_voice)
             except Exception:  # noqa: BLE001 - the speech thread must never die
                 log.exception("speech item failed")
             finally:
+                if item is not None:
+                    with self._lock:
+                        self._playing = None
+                        # Count the phrase as said even if it failed, so the text keeps up.
+                        self._words_done[tag] = self._words_done.get(tag, 0) + words
+                        if tag in self._pending:
+                            self._pending[tag] -= 1
+                            if self._pending[tag] <= 0:
+                                del self._pending[tag]
                 self.speaking = self._queue.qsize() > 0
                 self._queue.task_done()
 
@@ -586,16 +954,46 @@ class SpeechManager:
         with self._lock:
             return generation == self._generation and not self._closed
 
-    def _speak_item(self, text: str, lang: str, voice: str, speed: float, generation: int) -> SpeechResult:
+    def _speak_item(
+        self, text: str, lang: str, voice: str, speed: float, generation: int, tag=None, natural_voice: str = ""
+    ) -> SpeechResult:
         engine = self._engine_choice()
+        natural_error = ""
+
+        if engine in {"auto", "natural"}:
+            if self.natural_usable:
+                try:
+                    self._speak_natural(text, natural_voice or self._natural_voice(lang), speed, generation, tag)
+                    self._natural_failures = 0
+                    self._last_error = ""
+                    self._set_engine(self.natural.name)
+                    return SpeechResult(True, self.natural.name)
+                except Exception as error:  # noqa: BLE001
+                    natural_error = str(error) or type(error).__name__
+                    self._record_natural_failure(natural_error)
+                    if engine == "natural":  # user chose this voice only: do not switch voices
+                        self._last_error = natural_error
+                        self._notify(f"The natural voice is not working: {natural_error}")
+                        return SpeechResult(False, self.natural.name, natural_error)
+            elif engine == "natural":
+                reason = ("The natural voice is not installed (the edge-tts package is missing)."
+                          if not self.natural_installed else "The natural voice is paused after repeated errors.")
+                self._last_error = reason
+                self._notify(f"Speech is set to the natural voice only. {reason}")
+                return SpeechResult(False, self.natural.name, reason)
+            if not self._current(generation):
+                return SpeechResult(True, "cancelled")
+
         want_kokoro = engine in {"auto", "kokoro"} and self.kokoro_usable
         kokoro_error = ""
 
         if want_kokoro:
             try:
-                self._speak_kokoro(text, lang, voice, speed, generation)
+                self._speak_kokoro(text, lang, voice, speed, generation, tag)
                 self._failures = 0
                 self._last_error = ""
+                if natural_error and self._last_engine != "Kokoro":
+                    self._notify(f"Natural voice unavailable ({natural_error}). Using Kokoro instead.")
                 self._set_engine("Kokoro")
                 return SpeechResult(True, "Kokoro")
             except Exception as error:  # noqa: BLE001
@@ -616,7 +1014,8 @@ class SpeechManager:
             try:
                 if engine == "auto":
                     why = kokoro_error or ("Kokoro is not installed" if not self.kokoro_installed else "Kokoro is paused after errors")
-                    self._announce_fallback(why)
+                    self._announce_fallback(why, natural_error)
+                self._start_words(tag, text, speed=speed)
                 self.fallback.speak(text, speed)
                 self._set_engine(self.fallback.name)
                 return SpeechResult(True, self.fallback.name)
@@ -627,7 +1026,57 @@ class SpeechManager:
         self._last_error = kokoro_error or "No speech engine is available."
         return SpeechResult(False, "", self._last_error)
 
-    def _speak_kokoro(self, text: str, lang: str, voice: str, speed: float, generation: int) -> None:
+    def _natural_job(self, text: str, voice: str, speed: float) -> NaturalSpeechJob:
+        """The fetch for this phrase: started ahead of time if possible, otherwise now."""
+        with self._lock:
+            job = self._prefetched.pop((text, voice, speed), None)
+        return job if job is not None else NaturalSpeechJob(self.natural, text, voice, speed)
+
+    def _prefetch_next(self, generation: int) -> None:
+        """Start fetching the next queued phrases so they play straight after this one."""
+        with self._queue.mutex:
+            upcoming = [item for item in list(self._queue.queue)[: self.PREFETCH_PHRASES] if item is not None]
+        for text, _lang, _voice, speed, item_generation, _tag, natural_voice in upcoming:
+            key = (text, natural_voice, speed)
+            with self._lock:
+                if item_generation == generation and key not in self._prefetched:
+                    self._prefetched[key] = NaturalSpeechJob(self.natural, *key)
+
+    def _speak_natural(self, text: str, voice: str, speed: float, generation: int, tag=None) -> None:
+        job = self._natural_job(text, voice, speed)
+        first = job.next_chunk(NaturalVoice.TIMEOUT_SECONDS + 5)
+        if first is None:  # nothing came back: let the next engine take over
+            raise job.error or SpeechError("the natural voice service returned no audio")
+        if not self._current(generation):
+            return
+        self._prefetch_next(generation)
+
+        def chunks():
+            yield first
+            while self._current(generation):
+                chunk = job.next_chunk(15.0)
+                if chunk is None:
+                    if job.error is not None:  # cut off part-way: what was heard stays, the rest is skipped
+                        log.warning("natural voice stopped part-way: %s", job.error)
+                    return
+                yield chunk
+
+        self._start_words(tag, text, starts=job.word_starts, live=True)
+        try:
+            self._pcm_player(chunks(), job.rate, self._stream_holder)
+        except Exception:  # noqa: BLE001
+            if self._current(generation):
+                raise
+            # stop() aborted the audio stream; that is not a failure
+
+    def _record_natural_failure(self, error: str) -> None:
+        self._natural_failures += 1
+        log.error("natural voice failed (%s): %s", self._natural_failures, error)
+        if self._natural_failures >= self.MAX_NATURAL_FAILURES:
+            self._natural_disabled_until = self._clock() + self.NATURAL_COOLDOWN_SECONDS
+            self._natural_failures = 0
+
+    def _speak_kokoro(self, text: str, lang: str, voice: str, speed: float, generation: int, tag=None) -> None:
         if self._helper is None:
             self._helper = KokoroHelper(self.python_path, self.helper_path, self._log_path)  # type: ignore[arg-type]
         reply = self._helper.request({"text": text, "lang": lang, "voice": voice, "speed": speed})
@@ -637,6 +1086,13 @@ class SpeechManager:
         wav_path = Path(path)
         try:
             if self._current(generation):
+                duration = None
+                try:
+                    with wave.open(str(wav_path), "rb") as wav:
+                        duration = wav.getnframes() / max(1, wav.getframerate())
+                except (OSError, wave.Error, EOFError):
+                    pass
+                self._start_words(tag, text, duration=duration, speed=speed)
                 self._player(wav_path, self._stream_holder)
         finally:
             try:
@@ -654,9 +1110,13 @@ class SpeechManager:
             self._disabled_until = self._clock() + self.KOKORO_COOLDOWN_SECONDS
             self._failures = 0
 
-    def _announce_fallback(self, reason: str) -> None:
+    def _announce_fallback(self, reason: str, natural_error: str = "") -> None:
         if self._last_engine != self.fallback.name:
-            self._notify(f"Kokoro voice unavailable ({reason}). Using the {self.fallback.name} instead.")
+            if natural_error:
+                reason = f"natural voice: {natural_error}; Kokoro: {reason[0].lower() + reason[1:]}"
+                self._notify(f"Natural and Kokoro voices unavailable ({reason}). Using the {self.fallback.name} instead.")
+            else:
+                self._notify(f"Kokoro voice unavailable ({reason}). Using the {self.fallback.name} instead.")
 
     def _set_engine(self, name: str) -> None:
         if name != self._last_engine:
@@ -669,7 +1129,11 @@ class SpeechManager:
         lang, voice, speed = self._voice_and_speed(language)
         with self._lock:
             generation = self._generation
-        return self._speak_item(clean_for_speech(text), lang, voice, speed, generation)
+        try:
+            return self._speak_item(clean_for_speech(text), lang, voice, speed, generation, None, self._natural_voice(language))
+        finally:
+            with self._lock:
+                self._playing = None
 
     # ------------------------------------------------------------------ control
     def stop(self) -> None:
@@ -677,6 +1141,9 @@ class SpeechManager:
         with self._lock:
             self._generation += 1
             holder = list(self._stream_holder)
+            self._pending.clear()
+            self._prefetched.clear()
+            self._playing = None
         for stream in holder:
             try:
                 stream.abort()

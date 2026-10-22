@@ -15,9 +15,9 @@ websites, summarise text files, run Windows commands (with confirmation), and re
 | Area | What works |
 |---|---|
 | Chat | Text conversations, saved history, new/rename/delete conversations, streaming local answers |
-| AI engines | **Local** (Ollama, nothing leaves your PC) · **Online** (Gemini, needs a key) · **Automatic** (local by default, Gemini only for a few request types, and only if a key is set) |
+| AI engines | **Local** (Ollama; nothing leaves your PC unless the natural voice is speaking, see below) · **Online** (Gemini, needs a key) · **Automatic** (local by default, Gemini only for a few request types, and only if a key is set) |
 | Voice in | Microphone button → speech recognised **on your PC** with Whisper (Local/Automatic) or Gemini Live (Online). Click-to-stop or push-to-talk, choice of microphone, Esc cancels |
-| Voice out | Kokoro neural voice (optional install) with an automatic fallback to the Windows voice. You are told when the fallback is used |
+| Voice out | A natural, human-sounding voice (Microsoft's online neural voices, no key needed) that talks back conversationally while the words appear as they are said; Kokoro (local, optional install) and the Windows voice as fallbacks. You are told when NEXUS switches voices |
 | Reminders | "remind me to call mum in 10 minutes"; list, edit, complete, delete; they survive restarts and fire while NEXUS is in the system tray |
 | Memory | "remember that my sister is Aline"; view, edit, delete, or turn personalisation off in **Privacy & data** |
 | Everyday tools | time/date, calculator ("calculate 15% of 80"), unit conversion ("convert 10 km to miles"), diagnostics |
@@ -86,7 +86,7 @@ py -3.12 -m venv .venv
 |---|---|
 | [Installation](docs/INSTALL.md) | Installer, from source, Ollama and Gemini setup |
 | [Configuration](docs/CONFIGURATION.md) | Every setting, data locations, environment variables |
-| [Voice & Kokoro](docs/VOICE.md) | Speech in/out, push-to-talk, installing Kokoro |
+| [Voice](docs/VOICE.md) | Speech in/out, the natural voice, push-to-talk, installing Kokoro |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Fixes for the problems people actually hit |
 | [Security & privacy](docs/SECURITY_PRIVACY.md) | What is stored, what leaves your PC, how commands are controlled |
 | [Release & packaging](docs/RELEASE.md) | Building the exe and installer, release checklist |
